@@ -1,0 +1,20 @@
+[Unit]
+Description=Git 自动同步服务 [%i]
+Documentation=file:/opt/git-autosync/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=GIT_AUTOSYNC_PREFIX=/opt/git-autosync
+Environment=GIT_AUTOSYNC_CONF=/etc/git-autosync
+Environment=GIT_AUTOSYNC_LOG=/var/log/git-autosync
+ExecStart=/opt/git-autosync/bin/git-autosync-sync %i
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=git-autosync-%i
+
+[Install]
+WantedBy=multi-user.target

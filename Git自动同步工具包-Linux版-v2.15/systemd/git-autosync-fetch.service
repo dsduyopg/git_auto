@@ -1,0 +1,13 @@
+[Unit]
+Description=Git 云端镜像拉取（单次执行）
+Documentation=file:/opt/git-autosync/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=GIT_AUTOSYNC_PREFIX=/opt/git-autosync
+Environment=GIT_AUTOSYNC_CONF=/etc/git-autosync
+Environment=GIT_AUTOSYNC_LOG=/var/log/git-autosync
+ExecStart=/opt/git-autosync/bin/git-autosync-fetch --once
+SyslogIdentifier=git-autosync-fetch

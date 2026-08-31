@@ -1,0 +1,12 @@
+[Unit]
+Description=定时自动拉取已登记的云端 Git 镜像
+Documentation=file:/opt/git-autosync/README.md
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=git-autosync-fetch.service
+
+[Install]
+WantedBy=timers.target

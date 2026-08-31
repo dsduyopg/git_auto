@@ -1,0 +1,130 @@
+.TH GIT-AUTOSYNC 1 "2026-09-01" "git-autosync 2.15" "User Commands"
+.SH NAME
+git-autosync \- Git 自动同步工具包主命令（本地文件夹自动同步 Gitee/GitHub）
+.SH SYNOPSIS
+.B git-autosync
+[\fICOMMAND\fR] [\fIARGUMENT\fR]
+.br
+.B git-autosync
+.RI ( 无参数运行进入交互式主菜单 )
+.SH DESCRIPTION
+.B git-autosync
+让本地文件夹自动同步到 Gitee / GitHub，或把云端仓库定时拉取到本地。
+.PP
+本版本移植自 Windows v2.15（PowerShell + NSSM），使用
+.B systemd
+替代 NSSM 服务，使用
+.B inotifywait
+替代 FileSystemWatcher 实现实时监听，功能与原版保持一致。
+.PP
+不带任何参数运行时，进入交互式主菜单，可调用全部功能。
+.SH COMMANDS
+.TP
+.B env
+环境自检：检查 git、inotify-tools、SSH 私钥、systemd、python3。
+.TP
+.B ssh-key
+生成 SSH 密钥（ed25519），并打印公钥供添加到 Gitee / GitHub。
+.TP
+.B new
+新建自动推送仓库（本地 \(-> 云端）。交互式填写 SSH 私钥、提交身份、本地路径、
+排除目录、平台与远端地址；完成后自动创建并启用 systemd 服务
+.BR git-autosync@<名称>.service 。
+.TP
+.B remove
+移除推送目录：把指定子目录从 Git 跟踪中移除并写入 .gitignore，本地文件保留。
+.TP
+.B mirror
+新建云端镜像拉取（云端 \(-> 本地）：登记远端地址与本地目录，可立即克隆一次。
+.TP
+.B fetch-timer
+定时拉取服务管理：启用/停用、设置间隔（分钟）、立即执行一次。
+.TP
+.B list
+列出所有已登记仓库及其服务状态。
+.TP
+.B status
+查看各仓库服务的详细状态。
+.TP
+.BR start " | " stop " | " restart " | " enable " | " disable " <仓库名>"
+启动 / 停止 / 重启 / 设为开机自启 / 取消开机自启 指定仓库的同步服务。
+.TP
+.B uninstall \fR<仓库名>
+卸载指定仓库的同步服务，默认保留仓库文件（可选一并删除）。
+.TP
+.B fix
+修复所有同步服务：清理残留 index.lock 并重启。
+.TP
+.B rebuild
+彻底重建所有服务（停止 \(-> 重装单元 \(-> 重新启用）。
+.TP
+.B mail
+邮件通知配置向导：绑定 SMTP、开关通知、发送测试邮件、管理收件人、设置通知间隔。
+.TP
+.BR help ", " \-h ", " \-\-help
+显示命令用法。
+.SH FILES
+.TP
+.I /opt/git-autosync/
+程序主体（bin、lib、systemd、docs）。
+.TP
+.I /etc/git-autosync/repos/<名称>.conf
+每个仓库的同步配置。字段：
+repo_path, branch, remote, ssh_key, debounce, retry, retry_wait, mail_notify, log_file, exclude。
+.TP
+.I /etc/git-autosync/mirror_config.txt
+云端镜像拉取登记表，每行格式：
+.BR "目标目录|远端URL|分支|SSH密钥路径" 。
+.TP
+.I /etc/git-autosync/mirror_settings.txt
+拉取设置：
+.BR interval=60 ", " default_ssh_key= 。
+.TP
+.I /etc/git-autosync/mail_config.txt
+SMTP 邮件配置（权限 0600）：enabled, smtp_server, smtp_port, use_ssl, from, password, to, notify_interval。
+.TP
+.I /var/log/git-autosync/
+拉取日志 mirror_fetcher.log、邮件日志 git_mail_notify.log。
+.TP
+.I /usr/lib/systemd/system/git-autosync@.service
+推送服务模板（每仓库一个实例）。
+.SH ENVIRONMENT
+.TP
+.B GIT_MIRROR_CLEAN=0
+拉取时不清理未跟踪文件。
+.TP
+.BR GIT_AUTOSYNC_PREFIX ", " GIT_AUTOSYNC_CONF ", " GIT_AUTOSYNC_LOG
+覆盖默认的安装目录、配置目录与日志目录（调试用）。
+.SH EXAMPLES
+.PP
+首次使用三步：
+.PP
+.RS
+.nf
+sudo git-autosync env       # 1. 环境自检
+sudo git-autosync ssh-key   # 2. 生成 SSH 钥匙
+sudo git-autosync new       # 3. 新建自动推送仓库
+.fi
+.RE
+.PP
+查看服务状态与日志：
+.PP
+.RS
+.nf
+systemctl status git-autosync@myrepo.service
+journalctl -u git-autosync@myrepo.service -f
+tail -f /path/to/repo/git_sync.log
+.fi
+.RE
+.SH SEE ALSO
+.BR systemctl (1),
+.BR journalctl (1),
+.BR inotifywait (1),
+.BR git (1)
+.PP
+完整使用手册：
+.I /opt/git-autosync/docs/使用手册.md
+.SH AUTHOR
+wowsony <https://github.com/dsduyopg/linux_heima>
+.SH COPYRIGHT
+MIT License

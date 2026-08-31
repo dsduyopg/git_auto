@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# ============================================================
+# Git 自动同步工具包 (Linux 版) - 邮件通知模块
+# 移植自 Windows 版 05-邮件通知/send_mail.ps1（.NET SmtpClient -> python3 smtplib）
+#
+# 用法:
+#   git-autosync-mail -s "主题" -b "正文" [-t 收件人] [-f]
+#     -t  覆盖收件人（多个用逗号分隔）
+#     -f  强制发送，跳过节流（测试邮件用）
+#
+# 配置: /etc/git-autosync/mail_config.txt (key=value)
+#     enabled=1|0             总开关，默认关闭
+#     smtp_server=smtp.qq.com
+#     smtp_port=465           默认 465
+#     use_ssl=1|0             默认 1
+#     from=you@qq.com
+#     password=SMTP授权码      （不是邮箱登录密码）
+#     to=a@b.com,c@d.com
+#     notify_interval=0       聚合窗口（分钟），0=即时发送
+#
+# 设计原则（与 Windows 版一致）：
+#   1. 未配置 或 enabled=0 -> 静默退出(exit 0)，绝不影响同步主流程
+#   2. 发送失败             -> 仅记录日志，exit 0，不中断同步
+#   3. 配置放 /etc 下，保证 systemd 服务(root)与当前用户都能读到
+# ============================================================
+
+set -uo pipefail
+
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
+# shellcheck source=/dev/null
+. "${SELF_DIR}/../lib/common.sh"
+
+SUBJECT=""
+BODY=""
+TO_OVERRIDE=""
+FORCE=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s|--subject) SUBJECT="${2:-}"; shift 2;;
+        -b|--body)    BODY="${2:-}";    shift 2;;
+        -t|--to)      TO_OVERRIDE="${2:-}"; shift 2;;
+        -f|--force)   FORCE=1; shift;;
+        -c|--config)  MAIL_CONF="${2:-}"; shift 2;;
+        -h|--help)
+            sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0;;
+        *) shift;;
+    esac
+done
+
+# 日志目录自动创建
+mkdir -p "$(dirname "$MAIL_CONF")" 2>/dev/null
+
+mail_log() { log_line "$MAIL_LOG" "$*"; }
+
+# ---- 未配置则静默跳过（不算错误） ----
+if [ ! -f "$MAIL_CONF" ]; then exit 0; fi
+
+enabled="$(conf_get "$MAIL_CONF" enabled || echo 0)"
+if [ "$enabled" != "1" ]; then exit 0; fi
+
+server="$(conf_get "$MAIL_CONF" smtp_server || true)"
+from="$(conf_get "$MAIL_CONF" from || true)"
+pass="$(conf_get "$MAIL_CONF" password || true)"
+to="$(conf_get "$MAIL_CONF" to || true)"
+port="$(conf_get "$MAIL_CONF" smtp_port || echo 465)"
+use_ssl="$(conf_get "$MAIL_CONF" use_ssl || echo 1)"
+interval="$(conf_get "$MAIL_CONF" notify_interval || echo 0)"
+
+[ -n "$TO_OVERRIDE" ] && to="$TO_OVERRIDE"
+
+if [ -z "$server" ] || [ -z "$from" ] || [ -z "$pass" ] || [ -z "$to" ]; then
+    mail_log "[跳过] 邮件配置不完整（smtp_server / from / password / to 为必填）"
+    exit 0
+fi
+
+[[ "$interval" =~ ^[0-9]+$ ]] || interval=0
+
+# ---- 发送频率节流：interval 分钟内最多一封（聚合通知，避免刷屏） ----
+if [ "$FORCE" -eq 0 ] && [ "$interval" -gt 0 ]; then
+    if [ -f "$LAST_NOTIFY" ]; then
+        last_t="$(stat -c %Y "$LAST_NOTIFY" 2>/dev/null || echo 0)"
+        now_t="$(date +%s)"
+        if [ $(( (now_t - last_t) / 60 )) -lt "$interval" ]; then
+            exit 0
+        fi
+    fi
+    touch "$LAST_NOTIFY" 2>/dev/null || true
+fi
+
+# ---- 用 python3 发送（UTF-8 中文主题/正文） ----
+if ! need_cmd python3; then
+    mail_log "[失败] 未找到 python3，无法发送邮件"
+    exit 0
+fi
+
+MAIL_SERVER="$server" MAIL_PORT="$port" MAIL_SSL="$use_ssl" \
+MAIL_FROM="$from" MAIL_PASS="$pass" MAIL_TO="$to" \
+MAIL_SUBJECT="$SUBJECT" MAIL_BODY="$BODY" python3 - <<'PYEOF'
+import os, smtplib, ssl
+from email.mime.text import MIMEText
+from email.header import Header
+from email.utils import parseaddr, formataddr
+
+host = os.environ.get('MAIL_SERVER', '')
+port = int(os.environ.get('MAIL_PORT') or 465)
+use_ssl = os.environ.get('MAIL_SSL', '1') != '0'
+user = os.environ.get('MAIL_FROM', '')
+passwd = os.environ.get('MAIL_PASS', '')
+to_raw = os.environ.get('MAIL_TO', '')
+subject = os.environ.get('MAIL_SUBJECT', 'Git 自动同步通知')
+body = os.environ.get('MAIL_BODY', '')
+
+recipients = [a.strip() for a in to_raw.replace(';', ',').split(',') if a.strip()]
+
+msg = MIMEText(body, 'plain', 'utf-8')
+msg['Subject'] = Header(subject, 'utf-8')
+msg['From'] = user
+msg['To'] = ', '.join(recipients)
+
+ctx = ssl.create_default_context()
+try:
+    if use_ssl:
+        with smtplib.SMTP_SSL(host, port, timeout=20, context=ctx) as s:
+            s.login(user, passwd)
+            s.sendmail(user, recipients, msg.as_string())
+    else:
+        with smtplib.SMTP(host, port, timeout=20) as s:
+            s.starttls(context=ctx)
+            s.login(user, passwd)
+            s.sendmail(user, recipients, msg.as_string())
+    print('OK')
+except Exception as e:
+    inner = e
+    while getattr(inner, '__cause__', None) or getattr(inner, 'args', None):
+        nxt = getattr(inner, '__cause__', None)
+        if not nxt:
+            break
+        inner = nxt
+    print('ERR: %s' % (inner if inner is not e else e))
+PYEOF
+
+_rc=$?
+if [ "$_rc" -eq 0 ]; then
+    mail_log "[OK] 邮件已发送 -> ${to}（主题: ${SUBJECT}）"
+else
+    mail_log "[失败] 发送邮件出错（详见上一条 python3 输出）"
+fi
+
+exit 0

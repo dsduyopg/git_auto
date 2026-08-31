@@ -1,0 +1,655 @@
+#!/usr/bin/env bash
+# ============================================================
+# Git 自动同步工具包 (Linux 版) - 主命令
+# 移植自 Windows v2.15：
+#   service_manager.ps1 + new_sync_repo_generic.ps1 + 各 .bat 入口
+#   NSSM 服务注册  ->  systemctl 管理 systemd 服务
+#   FileSystemWatcher -> inotifywait
+#
+# 用法:
+#   git-autosync              交互式主菜单
+#   git-autosync env          环境自检
+#   git-autosync ssh-key      生成 SSH 密钥
+#   git-autosync new          新建自动推送仓库（本地 -> 云端）
+#   git-autosync remove       移除推送目录（停止推送某个子目录）
+#   git-autosync mirror       新建云端镜像拉取（云端 -> 本地）
+#   git-autosync fetch-timer  定时拉取服务管理
+#   git-autosync list         列出已登记仓库
+#   git-autosync status       查看服务状态
+#   git-autosync {start|stop|restart|enable|disable} <仓库名>
+#   git-autosync uninstall <仓库名>   卸载服务
+#   git-autosync fix          修复所有服务
+#   git-autosync rebuild      彻底重建所有服务
+#   git-autosync mail         邮件通知配置
+# ============================================================
+
+set -uo pipefail
+
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
+# shellcheck source=/dev/null
+. "${SELF_DIR}/../lib/common.sh"
+
+# ---------------- 通用工具 ----------------
+
+real_home() {
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || echo "$HOME"
+    else
+        echo "${HOME:-/root}"
+    fi
+}
+
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        err "该操作需要 root 权限（需写入 ${CONF_DIR} 与 systemd 单元），请用 sudo 运行"
+        exit 1
+    fi
+}
+
+# 确保 systemd 单元文件已安装到系统
+ensure_units() {
+    local src="${SELF_DIR}/../systemd"
+    [ -d "$src" ] || return 0
+    if [ -d "$UNIT_DIR" ]; then
+        install -m 0644 "${src}/git-autosync@.service"        "${UNIT_DIR}/" 2>/dev/null
+        install -m 0644 "${src}/git-autosync-fetch.service"   "${UNIT_DIR}/" 2>/dev/null
+        [ -f "${UNIT_DIR}/git-autosync-fetch.timer" ] || \
+            install -m 0644 "${src}/git-autosync-fetch.timer" "${UNIT_DIR}/" 2>/dev/null
+        systemctl daemon-reload 2>/dev/null
+    fi
+}
+
+# 生成唯一服务名（基于目录名，冲突则加序号）
+gen_service_name() {
+    local base name cand i=1
+    base="$(safe_name "$(basename "$1")")"
+    [ -n "$base" ] || base="repo"
+    cand="$base"
+    while [ -f "${REPO_CONF_DIR}/${cand}.conf" ]; do
+        i=$((i + 1))
+        cand="${base}_${i}"
+    done
+    printf '%s' "$cand"
+}
+
+select_repo() {
+    local repos sel
+    repos="$(list_repos)"
+    if [ -z "$repos" ]; then
+        warn "尚未登记任何仓库"
+        return 1
+    fi
+    echo "已登记的仓库："
+    local i=1 r name
+    while IFS= read -r r; do
+        echo "  $i) $r"
+        i=$((i + 1))
+    done <<EOF
+$repos
+EOF
+    read -r -p "请选择编号: " sel
+    name="$(printf '%s\n' "$repos" | sed -n "${sel}p")"
+    [ -n "$name" ] || return 1
+    printf '%s' "$name"
+}
+
+# ---------------- 1. 环境自检 ----------------
+cmd_env() { exec "${SELF_DIR}/git-autosync-env"; }
+
+# ---------------- 2. 生成 SSH 密钥 ----------------
+cmd_ssh_key() {
+    title "生成 SSH 密钥（Gitee / GitHub 通用）"
+    hr
+    local home_dir email key
+    home_dir="$(real_home)"
+    email="$(ask "请输入邮箱（用于密钥注释）" "your@email.com")"
+    key="${home_dir}/.ssh/id_ed25519"
+
+    if [ -f "$key" ]; then
+        warn "已存在密钥：$key"
+        confirm "是否覆盖？" || { info "已取消"; return 0; }
+        rm -f "$key" "${key}.pub"
+    fi
+
+    mkdir -p "${home_dir}/.ssh" && chmod 700 "${home_dir}/.ssh"
+    if ! need_cmd ssh-keygen; then
+        err "未找到 ssh-keygen，请先安装 openssh-clients"
+        return 1
+    fi
+
+    if ssh-keygen -t ed25519 -C "$email" -f "$key" -N ''; then
+        ok "密钥已生成：$key"
+        # sudo 运行时把属主还原给真实用户
+        if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+            chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "${home_dir}/.ssh" 2>/dev/null
+        fi
+        hr
+        title "请把下面这段公钥添加到 Gitee / GitHub（SSH Keys）："
+        cat "${key}.pub"
+        hr
+        info "Gitee : 设置 -> SSH公钥"
+        info "GitHub: Settings -> SSH and GPG keys -> New SSH key"
+    else
+        err "密钥生成失败"
+        return 1
+    fi
+}
+
+# ---------------- 3. 新建自动推送仓库 ----------------
+cmd_new() {
+    require_root
+    need_cmd git || { err "请先安装 git"; return 1; }
+    ensure_units
+    mkdir -p "$REPO_CONF_DIR"
+
+    title "新建自动推送仓库（本地文件夹 → 云端，实时自动提交推送）"
+    hr
+
+    # --- 第 1 项：选择 SSH 私钥 ---
+    info "第 1 项：选择 SSH 私钥"
+    local ssh_dir home_dir keys=() choice ssh_key=""
+    home_dir="$(real_home)"
+    ssh_dir="${home_dir}/.ssh"
+    if [ -d "$ssh_dir" ]; then
+        while IFS= read -r f; do
+            [ -n "$f" ] && keys+=("$f")
+        done < <(find "$ssh_dir" -maxdepth 1 -type f \
+            ! -name '*.pub' ! -name 'known_hosts' ! -name 'config' \
+            ! -name 'authorized_keys' 2>/dev/null | sort)
+    fi
+
+    if [ ${#keys[@]} -gt 0 ]; then
+        local i=1
+        for k in "${keys[@]}"; do echo "  $i) $k"; i=$((i + 1)); done
+        read -r -p "选择编号（直接回车用第 1 个，或输入完整路径）: " choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#keys[@]} ]; then
+            ssh_key="${keys[$((choice - 1))]}"
+        elif [ -n "$choice" ]; then
+            ssh_key="$choice"
+        else
+            ssh_key="${keys[0]}"
+        fi
+    else
+        ssh_key="$(ask "未扫描到私钥，请输入私钥完整路径（可留空使用默认 SSH 配置）")"
+    fi
+    [ -n "$ssh_key" ] && ok "使用私钥：$ssh_key"
+
+    # --- 第 2 项：git 身份 ---
+    info "第 2 项：Git 提交身份"
+    local git_name git_email
+    git_name="$(ask "  user.name" "your-name")"
+    git_email="$(ask "  user.email" "your@email.com")"
+
+    # --- 第 1 步：本地路径 ---
+    hr
+    local repo_path
+    repo_path="$(ask "第 1 步：要同步的本地文件夹路径")"
+    [ -n "$repo_path" ] || { err "路径不能为空"; return 1; }
+    # 去掉末尾斜杠
+    repo_path="${repo_path%/}"
+    if [ ! -d "$repo_path" ]; then
+        if confirm "目录不存在，是否创建 ${repo_path}？"; then
+            mkdir -p "$repo_path" || { err "创建失败"; return 1; }
+        else
+            return 1
+        fi
+    fi
+    ok "仓库路径：$repo_path"
+
+    # --- 第 1.5 步：排除目录/文件 ---
+    local exclude_raw exclude_items=() ex rel
+    exclude_raw="$(ask "第 1.5 步：要排除的目录/文件（逗号分隔，可留空）")"
+    if [ -n "$exclude_raw" ]; then
+        IFS=',，' read -ra exclude_items <<< "$exclude_raw"
+    fi
+
+    # --- 第 2 步：平台与分支 ---
+    hr
+    local plat branch
+    echo "第 2 步：选择平台"
+    echo "  1) Gitee  （默认分支 master）"
+    echo "  2) GitHub （默认分支 main）"
+    read -r -p "选择 [1/2]（默认 1）: " plat
+    if [ "$plat" = "2" ]; then branch="main"; else branch="master"; fi
+    branch="$(ask "  确认分支名" "$branch")"
+
+    # --- 第 3 步：远端地址 ---
+    local remote_url
+    remote_url="$(ask "第 3 步：远端 SSH 地址（如 git@github.com:user/repo.git）")"
+    [ -n "$remote_url" ] || { err "远端地址不能为空"; return 1; }
+
+    # GitHub 走 443 端口，兼容封锁 22 端口的网络（与 Windows 版一致）
+    if [[ "$remote_url" =~ ^git@github\.com:(.+)$ ]]; then
+        remote_url="ssh://git@ssh.github.com:443/${BASH_REMATCH[1]}"
+        info "已自动改用 443 端口：$remote_url"
+    fi
+
+    # --- git 初始化 ---
+    hr
+    info "初始化 git 仓库..."
+    git -C "$repo_path" init -q 2>/dev/null || git -C "$repo_path" init
+    git -C "$repo_path" symbolic-ref HEAD "refs/heads/${branch}" 2>/dev/null
+    git -C "$repo_path" remote remove origin 2>/dev/null
+    git -C "$repo_path" remote add origin "$remote_url"
+
+    if [ -n "$ssh_key" ] && [ -f "$ssh_key" ]; then
+        git -C "$repo_path" config core.sshCommand "$(ssh_cmd_for "$ssh_key")"
+    fi
+    git -C "$repo_path" config --local --add safe.directory "$repo_path"
+    git -C "$repo_path" config --local user.name "$git_name"
+    git -C "$repo_path" config --local user.email "$git_email"
+
+    export GIT_SSH_COMMAND="$(ssh_cmd_for "$ssh_key")"
+    info "首次尝试拉取远端（空仓库属正常）..."
+    git -C "$repo_path" pull origin "$branch" 2>&1 | tail -n3 || true
+
+    # --- 排除项写入 .gitignore 并取消跟踪 ---
+    local gi="${repo_path}/.gitignore"
+    for ex in "${exclude_items[@]:-}"; do
+        ex="$(printf '%s' "$ex" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [ -n "$ex" ] || continue
+        # 转成仓库内相对路径
+        rel="$ex"
+        case "$rel" in
+            "$repo_path"/*) rel="${rel#$repo_path/}";;
+        esac
+        if [ -d "${repo_path}/${rel}" ]; then rel="${rel%/}/"; fi
+
+        if ! grep -qxF "$rel" "$gi" 2>/dev/null; then
+            printf '%s\n' "$rel" >> "$gi"
+        fi
+        git -C "$repo_path" rm -r --cached --quiet --ignore-unmatch -- "$rel" 2>/dev/null
+        info "已排除（本地文件保留）：$rel"
+    done
+
+    # --- 生成服务名与配置 ---
+    local name conf_file
+    name="$(gen_service_name "$repo_path")"
+    conf_file="${REPO_CONF_DIR}/${name}.conf"
+
+    cat > "$conf_file" <<EOF
+# Git 自动同步仓库配置（由 git-autosync new 生成，可手工修改）
+repo_path=${repo_path}
+branch=${branch}
+remote=origin
+ssh_key=${ssh_key}
+debounce=3
+retry=3
+retry_wait=5
+mail_notify=0
+log_file=${repo_path}/git_sync.log
+EOF
+    chmod 0644 "$conf_file"
+    ok "已写入仓库配置：$conf_file（服务名：$name）"
+
+    # --- 首次提交（把 .gitignore 等推上去） ---
+    git -C "$repo_path" add -A 2>/dev/null
+    if [ -n "$(git -C "$repo_path" status --porcelain 2>/dev/null)" ]; then
+        git -C "$repo_path" commit -q -m "auto-sync: init $(date '+%Y-%m-%d %H:%M:%S')" 2>/dev/null
+        git -C "$repo_path" push -u origin "$branch" 2>&1 | tail -n3 || warn "首次推送失败，服务运行中会自动重试"
+    fi
+
+    # --- 启动 systemd 服务 ---
+    hr
+    if has_systemd; then
+        if systemctl enable --now "git-autosync@${name}.service" 2>/dev/null; then
+            ok "服务已启动并设为开机自启：git-autosync@${name}.service"
+        else
+            err "服务启动失败，请查看：journalctl -u git-autosync@${name} -n 50"
+        fi
+    else
+        warn "当前环境无 systemd，已生成配置但未启动服务"
+        info "可手动前台运行：sudo ${SELF_DIR}/git-autosync-sync ${name}"
+        info "或设为后台常驻：nohup ${SELF_DIR}/git-autosync-sync ${name} &"
+    fi
+
+    hr
+    ok "完成！${repo_path} 将实时自动同步到 ${remote_url}"
+    info "查看状态：git-autosync status"
+    info "查看日志：tail -f ${repo_path}/git_sync.log"
+}
+
+# ---------------- 4. 移除推送目录 ----------------
+cmd_remove() {
+    require_root
+    local name repo_path rel gitignore
+    name="$(select_repo)" || return 1
+    repo_path="$(conf_get "${REPO_CONF_DIR}/${name}.conf" repo_path)"
+    [ -n "$repo_path" ] || { err "配置缺少 repo_path"; return 1; }
+
+    title "移除推送目录：${repo_path}"
+    warn "该操作会把目录从 Git 跟踪中移除并写入 .gitignore，本地文件会保留"
+    rel="$(ask "请输入要移除的目录/文件（相对仓库路径，如 node_modules 或 大文件.zip）")"
+    [ -n "$rel" ] || { err "不能为空"; return 1; }
+    rel="${rel%/}"
+    if [ -d "${repo_path}/${rel}" ]; then rel="${rel}/"; fi
+
+    gitignore="${repo_path}/.gitignore"
+    grep -qxF "$rel" "$gitignore" 2>/dev/null || printf '%s\n' "$rel" >> "$gitignore"
+    git -C "$repo_path" rm -r --cached --quiet --ignore-unmatch -- "$rel" 2>/dev/null
+
+    export GIT_SSH_COMMAND="$(ssh_cmd_for "$(conf_get "${REPO_CONF_DIR}/${name}.conf" ssh_key || true)")"
+    git -C "$repo_path" add -A 2>/dev/null
+    git -C "$repo_path" commit -q -m "auto-sync: 移除推送 ${rel}" 2>/dev/null
+    if git -C "$repo_path" push origin "$(conf_get "${REPO_CONF_DIR}/${name}.conf" branch || echo main)" 2>&1 | tail -n3; then
+        ok "已移除推送：$rel（本地文件保留）"
+    else
+        warn "推送失败，服务运行中会自动重试"
+    fi
+}
+
+# ---------------- 5. 新建云端镜像拉取 ----------------
+cmd_mirror() {
+    require_root
+    ensure_units
+    mkdir -p "$(dirname "$MIRROR_CONF")"
+    touch "$MIRROR_CONF"
+
+    title "新建云端镜像拉取（云端 → 本地，定时自动更新）"
+    local url dir branch key
+    url="$(ask "远端 SSH 地址")"
+    dir="$(ask "拉取到哪个本地目录")"
+    branch="$(ask "分支名" "main")"
+    key="$(ask "SSH 私钥路径（可留空用默认密钥）")"
+
+    [ -n "$url" ] && [ -n "$dir" ] || { err "地址和目录不能为空"; return 1; }
+    dir="${dir%/}"
+
+    # 去重登记
+    if grep -qF "|${url}|" "$MIRROR_CONF" 2>/dev/null; then
+        warn "该远端已登记，将更新记录"
+        sed -i "\|${url}|d" "$MIRROR_CONF" 2>/dev/null
+    fi
+    printf '%s|%s|%s|%s\n' "$dir" "$url" "$branch" "$key" >> "$MIRROR_CONF"
+    ok "已登记到：$MIRROR_CONF"
+
+    confirm "是否立即克隆一次？" || return 0
+    GIT_MIRROR_CLEAN=0 "${SELF_DIR}/git-autosync-fetch" --once
+}
+
+# ---------------- 6. 定时拉取服务 ----------------
+cmd_fetch_timer() {
+    require_root
+    ensure_units
+    title "定时拉取服务"
+    hr
+    if has_systemd; then
+        systemctl is-active git-autosync-fetch.timer >/dev/null 2>&1 \
+            && ok "当前状态：已启用" || warn "当前状态：未启用"
+    fi
+    echo "  1) 启用定时拉取（开机自启 + 定时触发）"
+    echo "  2) 停用定时拉取"
+    echo "  3) 设置拉取间隔（分钟）"
+    echo "  4) 立即执行一次拉取"
+    echo "  0) 返回"
+    local c min
+    read -r -p "选择: " c
+    case "$c" in
+        1)
+            if has_systemd; then
+                systemctl enable --now git-autosync-fetch.timer 2>/dev/null \
+                    && ok "定时拉取已启用" || err "启用失败"
+            else
+                warn "无 systemd，可用常驻模式：nohup ${SELF_DIR}/git-autosync-fetch --daemon &"
+            fi
+            ;;
+        2)
+            has_systemd && systemctl disable --now git-autosync-fetch.timer 2>/dev/null \
+                && ok "定时拉取已停用"
+            ;;
+        3)
+            min="$(ask "拉取间隔（分钟，1-1440）" "60")"
+            if [[ "$min" =~ ^[0-9]+$ ]] && [ "$min" -ge 1 ] && [ "$min" -le 1440 ]; then
+                mkdir -p "$(dirname "$MIRROR_SETTINGS")"
+                conf_set "$MIRROR_SETTINGS" interval "$min"
+                if [ -d "$UNIT_DIR" ]; then
+                    cat > "${UNIT_DIR}/git-autosync-fetch.timer" <<EOF
+[Unit]
+Description=定时自动拉取已登记的云端 Git 镜像
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=${min}min
+Persistent=true
+Unit=git-autosync-fetch.service
+
+[Install]
+WantedBy=timers.target
+EOF
+                    systemctl daemon-reload 2>/dev/null
+                    systemctl restart git-autosync-fetch.timer 2>/dev/null
+                fi
+                ok "间隔已设为 ${min} 分钟"
+            else
+                err "输入无效"
+            fi
+            ;;
+        4)
+            "${SELF_DIR}/git-autosync-fetch" --once
+            ;;
+    esac
+}
+
+# ---------------- 7. 查看状态 / 列表 ----------------
+cmd_list() {
+    title "已登记仓库"
+    local repos r repo_path st
+    repos="$(list_repos)"
+    [ -n "$repos" ] || { warn "尚未登记任何仓库"; return 0; }
+    while IFS= read -r r; do
+        repo_path="$(conf_get "${REPO_CONF_DIR}/${r}.conf" repo_path || echo '?')"
+        st="unknown"
+        if has_systemd; then
+            systemctl is-active "git-autosync@${r}.service" >/dev/null 2>&1 && st="running" || st="stopped"
+            systemctl is-enabled "git-autosync@${r}.service" >/dev/null 2>&1 && st="${st}(开机自启)"
+        fi
+        printf '  %-24s %-14s %s\n' "$r" "$st" "$repo_path"
+    done <<EOF
+$repos
+EOF
+}
+
+cmd_status() {
+    title "服务状态"
+    local repos r
+    repos="$(list_repos)"
+    [ -n "$repos" ] || { warn "尚未登记任何仓库"; return 0; }
+    while IFS= read -r r; do
+        hr
+        if has_systemd; then
+            systemctl status "git-autosync@${r}.service" --no-pager -l 2>/dev/null | head -n 12
+        else
+            warn "无 systemd，无法查询服务状态"
+            break
+        fi
+    done <<EOF
+$repos
+EOF
+}
+
+# ---------------- 8. 服务操作 ----------------
+svc_op() {
+    local op="$1"
+    require_root
+    local name
+    name="$(select_repo)" || return 1
+    case "$op" in
+        start)   systemctl start   "git-autosync@${name}.service" && ok "已启动 ${name}";;
+        stop)    systemctl stop    "git-autosync@${name}.service" && ok "已停止 ${name}";;
+        restart) systemctl restart "git-autosync@${name}.service" && ok "已重启 ${name}";;
+        enable)  systemctl enable  "git-autosync@${name}.service" && ok "已设开机自启 ${name}";;
+        disable) systemctl disable "git-autosync@${name}.service" && ok "已取消开机自启 ${name}";;
+    esac
+}
+
+# ---------------- 9. 卸载服务 ----------------
+cmd_uninstall() {
+    require_root
+    local name repo_path
+    name="$(select_repo)" || return 1
+    repo_path="$(conf_get "${REPO_CONF_DIR}/${name}.conf" repo_path || true)"
+
+    title "卸载服务：${name}"
+    if has_systemd; then
+        systemctl stop "git-autosync@${name}.service" 2>/dev/null
+        systemctl disable "git-autosync@${name}.service" 2>/dev/null
+    fi
+    rm -f "${REPO_CONF_DIR}/${name}.conf"
+    ok "服务已卸载（仓库文件未删除）"
+
+    if [ -n "$repo_path" ] && [ -d "$repo_path" ]; then
+        echo
+        warn "仓库目录：${repo_path}"
+        if confirm "是否连仓库目录一起删除？此操作不可恢复！"; then
+            rm -rf "$repo_path" && ok "已删除：${repo_path}"
+        fi
+    fi
+}
+
+# ---------------- 10. 修复 / 重建 ----------------
+cmd_fix() {
+    require_root
+    ensure_units
+    title "修复所有同步服务"
+    local repos r n=0
+    repos="$(list_repos)"
+    [ -n "$repos" ] || { warn "尚未登记任何仓库"; return 0; }
+    while IFS= read -r r; do
+        # 清理残留锁后重启
+        local rp="${REPO_CONF_DIR}/${r}.conf"
+        local p; p="$(conf_get "$rp" repo_path || true)"
+        [ -n "$p" ] && rm -f "${p}/.git/index.lock" 2>/dev/null
+        if has_systemd; then
+            systemctl restart "git-autosync@${r}.service" 2>/dev/null && n=$((n + 1))
+        fi
+    done <<EOF
+$repos
+EOF
+    ok "已修复并重启 ${n} 个服务"
+}
+
+cmd_rebuild() {
+    require_root
+    title "彻底重建所有服务"
+    warn "将停止并重建全部同步服务（仓库数据和配置保留）"
+    confirm "确定继续？" || return 0
+    local repos r
+    repos="$(list_repos)"
+    [ -n "$repos" ] || { warn "尚未登记任何仓库"; return 0; }
+
+    # 移除单元文件后重装
+    rm -f "${UNIT_DIR}/git-autosync@.service"
+    if has_systemd; then
+        while IFS= read -r r; do
+            systemctl stop "git-autosync@${r}.service" 2>/dev/null
+            systemctl disable "git-autosync@${r}.service" 2>/dev/null
+        done <<EOF
+$repos
+EOF
+    fi
+    ensure_units
+    local n=0
+    while IFS= read -r r; do
+        if has_systemd; then
+            systemctl enable --now "git-autosync@${r}.service" 2>/dev/null && n=$((n + 1))
+        fi
+    done <<EOF
+$repos
+EOF
+    ok "已彻底重建 ${n} 个服务"
+}
+
+# ---------------- 11. 邮件通知 ----------------
+cmd_mail() { exec "${SELF_DIR}/git-autosync-mail-config" "$@"; }
+
+# ---------------- 主菜单 ----------------
+show_menu() {
+    clear 2>/dev/null
+    cat <<EOF
+
+==============================================================
+        Git 自动同步工具包 (Linux 版) v${VERSION}
+        本地文件夹 <-> Gitee / GitHub  自动同步
+==============================================================
+
+  1) 环境自检                    检查 Git / inotify / SSH 钥匙
+  2) 生成 SSH 密钥               一键生成并复制公钥
+  3) 新建自动推送仓库            本地文件夹 → 云端（实时自动推送）
+  4) 移除推送目录                停止推送某个子目录（本地文件保留）
+  5) 新建云端镜像拉取            云端 → 本地（立即克隆 + 定时更新）
+  6) 定时拉取服务                启用 / 停用 / 设置间隔
+  7) 查看仓库与服务状态
+  8) 启动 / 停止 / 重启服务
+  9) 卸载服务（可同时删除仓库）
+ 10) 修复服务
+ 11) 彻底重建服务
+ 12) 邮件通知配置                同步成功/失败自动发邮件（可选）
+  0) 退出
+
+EOF
+}
+
+interactive_menu() {
+    while true; do
+        show_menu
+        local c
+        read -r -p "请选择 [0-12]: " c
+        case "$c" in
+            1)  cmd_env;       read -r -p "按回车继续...";;
+            2)  cmd_ssh_key;   read -r -p "按回车继续...";;
+            3)  cmd_new;       read -r -p "按回车继续...";;
+            4)  cmd_remove;    read -r -p "按回车继续...";;
+            5)  cmd_mirror;    read -r -p "按回车继续...";;
+            6)  cmd_fetch_timer; read -r -p "按回车继续...";;
+            7)  cmd_status;    read -r -p "按回车继续...";;
+            8)  svc_menu;      read -r -p "按回车继续...";;
+            9)  cmd_uninstall; read -r -p "按回车继续...";;
+            10) cmd_fix;       read -r -p "按回车继续...";;
+            11) cmd_rebuild;   read -r -p "按回车继续...";;
+            12) cmd_mail;      read -r -p "按回车继续...";;
+            0)  exit 0;;
+            *)  warn "无效选择";;
+        esac
+    done
+}
+
+svc_menu() {
+    cmd_list
+    echo
+    echo "  s) 启动   t) 停止   r) 重启   e) 开机自启   d) 取消自启"
+    local c
+    read -r -p "选择操作（直接回车返回）: " c
+    case "$c" in
+        s) svc_op start;;
+        t) svc_op stop;;
+        r) svc_op restart;;
+        e) svc_op enable;;
+        d) svc_op disable;;
+    esac
+}
+
+# ---------------- 入口 ----------------
+case "${1:-}" in
+    env)          cmd_env;;
+    ssh-key)      cmd_ssh_key;;
+    new)          cmd_new;;
+    remove)       cmd_remove;;
+    mirror)       cmd_mirror;;
+    fetch-timer)  cmd_fetch_timer;;
+    list)         cmd_list;;
+    status)       cmd_status;;
+    start)        svc_op start;;
+    stop)         svc_op stop;;
+    restart)      svc_op restart;;
+    enable)       svc_op enable;;
+    disable)      svc_op disable;;
+    uninstall)    cmd_uninstall;;
+    fix)          cmd_fix;;
+    rebuild)      cmd_rebuild;;
+    mail)         cmd_mail;;
+    -h|--help|help)
+        sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//';;
+    "")           interactive_menu;;
+    *)            err "未知命令：$1（用 git-autosync help 查看用法）"; exit 1;;
+esac
