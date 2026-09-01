@@ -1,0 +1,10 @@
+# logrotate 配置：限制 Git 自动同步日志体积，避免 /var/log/git-autosync 无限增长
+/var/log/git-autosync/*.log {
+    missingok
+    notifempty
+    size 1M
+    rotate 4
+    compress
+    delaycompress
+    copytruncate
+}

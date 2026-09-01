@@ -30,6 +30,7 @@ cp -r "${PROJ_DIR}/systemd"  "$SRC/"
 cp -r "${PROJ_DIR}/packaging" "$SRC/" 2>/dev/null || true
 [ -d "${PROJ_DIR}/docs" ] && cp -r "${PROJ_DIR}/docs" "$SRC/"
 [ -d "${PROJ_DIR}/man" ]  && cp -r "${PROJ_DIR}/man"  "$SRC/"
+[ -d "${PROJ_DIR}/logrotate" ] && cp -r "${PROJ_DIR}/logrotate" "$SRC/"
 for f in README.md VERSION.txt LICENSE install.sh uninstall.sh; do
     [ -f "${PROJ_DIR}/${f}" ] && cp "${PROJ_DIR}/${f}" "$SRC/"
 done

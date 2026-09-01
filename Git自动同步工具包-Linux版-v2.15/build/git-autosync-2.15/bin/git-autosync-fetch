@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# ============================================================
+# Git 自动同步工具包 (Linux 版) - 云端镜像拉取器
+# 移植自 Windows 版 change_fetcher_generic.ps1
+#   NSSM 常驻服务 GitMirrorFetcher -> systemd timer git-autosync-fetch.timer
+#
+# 用法:
+#   git-autosync-fetch          执行一轮后立即退出（供 systemd timer 调用）
+#   git-autosync-fetch --daemon 常驻循环，按 interval 分钟定时拉取（等价 Windows 版行为）
+#
+# 登记表: /etc/git-autosync/mirror_config.txt
+#   每行格式:  目标目录|远端URL|分支|SSH密钥路径
+#   第 4 列可省略（使用默认密钥）；# 开头为注释
+# 间隔设置: /etc/git-autosync/mirror_settings.txt -> interval=60
+# ============================================================
+
+set -uo pipefail
+
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
+# shellcheck source=/dev/null
+. "${SELF_DIR}/../lib/common.sh"
+
+LOG_DIR="${GIT_AUTOSYNC_LOG:-/var/log/git-autosync}"
+LOG_FILE="${LOG_DIR}/mirror_fetcher.log"
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+log() { log_line "$LOG_FILE" "$*"; }
+
+# ---- 拉取间隔（分钟），默认 60，范围 1-1440 ----
+INTERVAL=60
+if [ -f "$MIRROR_SETTINGS" ]; then
+    _v="$(conf_get "$MIRROR_SETTINGS" interval || true)"
+    if [[ "$_v" =~ ^[0-9]+$ ]] && [ "$_v" -ge 1 ] && [ "$_v" -le 1440 ]; then
+        INTERVAL="$_v"
+    fi
+fi
+
+# ---- 是否清理未跟踪文件（设置 GIT_MIRROR_CLEAN=0 可关闭） ----
+CLEAN_UNTRACKED=1
+if [ "${GIT_MIRROR_CLEAN:-1}" = "0" ]; then
+    CLEAN_UNTRACKED=0
+fi
+
+# ---- 默认 SSH 私钥：取 SSH 目录下第一个私钥 ----
+SSH_HOME="${MIRROR_SSH_HOME:-/root/.ssh}"
+DEFAULT_KEY="$(conf_get "$MIRROR_SETTINGS" default_ssh_key 2>/dev/null || true)"
+if [ -z "$DEFAULT_KEY" ] && [ -d "$SSH_HOME" ]; then
+    DEFAULT_KEY="$(find "$SSH_HOME" -maxdepth 1 -type f \
+        ! -name '*.pub' ! -name 'known_hosts' ! -name 'config' \
+        ! -name 'authorized_keys' 2>/dev/null | sort | head -n1)"
+fi
+
+# ---- 邮件通知（可选，未配置则静默跳过） ----
+notify_mail() {
+    local subject="$1" content="$2"
+    [ -x "${SELF_DIR}/git-autosync-mail" ] || return 0
+    "${SELF_DIR}/git-autosync-mail" -s "$subject" -b "$content" >/dev/null 2>&1 || true
+}
+
+# ---- 更新单个镜像 ----
+update_mirror() {
+    local dir="$1" url="$2" branch="$3" key="${4:-}"
+    local out
+
+    [ -n "$key" ] || key="$DEFAULT_KEY"
+    if [ -n "$key" ] && [ -f "$key" ]; then
+        export GIT_SSH_COMMAND="$(ssh_cmd_for "$key")"
+    fi
+
+    if [ ! -d "${dir}/.git" ]; then
+        mkdir -p "$(dirname "$dir")" 2>/dev/null
+        if out="$(git clone "$url" "$dir" 2>&1)"; then
+            git -C "$dir" checkout "$branch" >/dev/null 2>&1
+            log "已克隆 ${dir}"
+            notify_mail "拉取成功: ${dir}" "目标: ${dir}
+分支: ${branch}
+时间: $(date '+%Y-%m-%d %H:%M:%S')
+结果: 已克隆成功"
+        else
+            log "克隆失败 ${dir}: ${out}"
+            notify_mail "拉取失败: ${dir}" "目标: ${dir}
+时间: $(date '+%Y-%m-%d %H:%M:%S')
+结果: 克隆失败
+错误: ${out}"
+        fi
+        return
+    fi
+
+    if ! out="$(git -C "$dir" fetch origin "$branch" 2>&1)"; then
+        log "fetch 失败 ${dir}: ${out}"
+        notify_mail "拉取失败: ${dir}" "目标: ${dir}
+时间: $(date '+%Y-%m-%d %H:%M:%S')
+结果: fetch 失败
+错误: ${out}"
+        return
+    fi
+
+    git -C "$dir" reset --hard "origin/${branch}" >/dev/null 2>&1
+    if [ "$CLEAN_UNTRACKED" -eq 1 ]; then
+        git -C "$dir" clean -fd >/dev/null 2>&1
+    fi
+    log "已更新 ${dir} -> origin/${branch}"
+    notify_mail "拉取成功: ${dir}" "目标: ${dir}
+分支: origin/${branch}
+时间: $(date '+%Y-%m-%d %H:%M:%S')
+结果: 已更新成功"
+}
+
+# ---- 执行一轮 ----
+run_once() {
+    local count=0 dir url branch key line
+
+    if [ ! -f "$MIRROR_CONF" ]; then
+        log "找不到登记表：$MIRROR_CONF（可先用 git-autosync 的『新建云端镜像拉取』登记）"
+        return 0
+    fi
+    if [ -z "$DEFAULT_KEY" ] && ! grep -qE '^[^#]*\|[^|]*\|[^|]*\|[^|]+' "$MIRROR_CONF"; then
+        log "未找到 SSH 私钥，且登记表未逐条指定密钥"
+        return 1
+    fi
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"                       # 去掉行内注释
+        line="$(printf '%s' "$line" | tr -d '\r')"
+        [ -n "$(printf '%s' "$line" | tr -d '[:space:]')" ] || continue
+
+        IFS='|' read -r dir url branch key <<EOF
+$line
+EOF
+        dir="$(printf '%s' "$dir" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        url="$(printf '%s' "$url" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        branch="$(printf '%s' "$branch" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        key="$(printf '%s' "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+        [ -n "$dir" ] && [ -n "$url" ] || continue
+        [ -n "$branch" ] || branch="main"
+
+        update_mirror "$dir" "$url" "$branch" "$key"
+        count=$((count + 1))
+    done < "$MIRROR_CONF"
+
+    log "本轮完成，共处理 ${count} 个镜像"
+}
+
+# ---- 入口 ----
+if ! need_cmd git; then err "未找到 git 命令"; exit 1; fi
+
+case "${1:-}" in
+    --daemon)
+        log "============================================"
+        log "change fetcher 启动（常驻模式）间隔: ${INTERVAL} 分钟"
+        log "登记表: ${MIRROR_CONF}  清理未跟踪文件: ${CLEAN_UNTRACKED}"
+        run_once
+        while true; do
+            sleep $((INTERVAL * 60))
+            log "----- 新一轮检测 -----"
+            run_once
+        done
+        ;;
+    *)
+        run_once
+        ;;
+esac

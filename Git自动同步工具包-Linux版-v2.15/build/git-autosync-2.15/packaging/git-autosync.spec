@@ -19,7 +19,7 @@ License:        MIT
 URL:            https://github.com/dsduyopg/git_auto
 Source0:        https://github.com/dsduyopg/git_auto/releases/download/v%{version}/%{name}-%{version}.tar.gz
 # SHA-256 of the upstream source tarball (verify before building):
-# c4514784b015e49eb4369690213e86ce93e814ed7980717112a8ba1ea55f4af0
+# ad3c2b808602aa72e2be62dacb29d503d4d31dc6cb91bf27181fd94cff78d28c
 
 BuildArch:      noarch
 
