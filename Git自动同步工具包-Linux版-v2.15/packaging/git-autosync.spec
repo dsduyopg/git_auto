@@ -12,7 +12,7 @@
 
 Name:           git-autosync
 Version:        2.15
-Release:        1%{?dist}
+Release:        6%{?dist}
 Summary:        Git 自动同步工具包（本地文件夹自动同步 Gitee/GitHub）
 
 License:        MIT

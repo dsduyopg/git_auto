@@ -34,17 +34,26 @@ else
     C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_GRAY=''; C_BOLD=''; C_OFF=''
 fi
 
-info()  { echo -e "${C_BLUE}[信息]${C_OFF} $*"; }
-ok()    { echo -e "${C_GREEN}[成功]${C_OFF} $*"; }
-warn()  { echo -e "${C_YELLOW}[警告]${C_OFF} $*"; }
-err()   { echo -e "${C_RED}[错误]${C_OFF} $*" >&2; }
-title() { echo -e "\n${C_BOLD}$*${C_OFF}"; }
+# ---- i18n：默认英文，可切换中文（见 lib/i18n.sh）----
+_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -r "${_LIB_DIR}/i18n.sh" ]; then
+    . "${_LIB_DIR}/i18n.sh"
+else
+    GIT_AUTOSYNC_LANG="en"
+    tr_msg() { printf '%s' "$1"; }
+fi
+
+info()  { echo -e "$(tr_msg "${C_BLUE}[信息]${C_OFF} $*")"; }
+ok()    { echo -e "$(tr_msg "${C_GREEN}[成功]${C_OFF} $*")"; }
+warn()  { echo -e "$(tr_msg "${C_YELLOW}[警告]${C_OFF} $*")"; }
+err()   { echo -e "$(tr_msg "${C_RED}[错误]${C_OFF} $*")" >&2; }
+title() { echo -e "\n${C_BOLD}$(tr_msg "$*")${C_OFF}"; }
 hr()    { echo -e "${C_GRAY}----------------------------------------------------------${C_OFF}"; }
 
 # ---- 日志：同时输出到屏幕和文件 ----
 log_line() {
     local logfile="$1"; shift
-    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" 2>/dev/null | tee -a "$logfile" 2>/dev/null
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$(tr_msg "$*")" 2>/dev/null | tee -a "$logfile" 2>/dev/null
 }
 
 # ---- 读取 key=value 配置（取最后一个匹配项） ----
@@ -82,7 +91,12 @@ require_cmd() {
     return 0
 }
 
-has_systemd() { [ -d /run/systemd/system ] && need_cmd systemctl; }
+has_systemd() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    [ -d /run/systemd/system ] && return 0
+    # WSL 等环境可能没 /run/systemd/system，但 systemctl 仍可工作
+    systemctl is-system-running >/dev/null 2>&1
+}
 
 # ---- 仓库配置：列出所有已登记仓库名 ----
 list_repos() {
@@ -123,13 +137,14 @@ safe_name() {
 # ---- 确认提示 ----
 confirm() {
     local prompt="${1:-确定继续?}" ans
-    read -r -p "$(echo -e "${C_YELLOW}${prompt}${C_OFF} [y/N]: ")" ans
+    read -r -p "$(echo -e "${C_YELLOW}$(tr_msg "$prompt")${C_OFF} [y/N]: ")" ans
     case "$ans" in [yY]*) return 0;; *) return 1;; esac
 }
 
 # ---- 读取输入（带默认值） ----
 ask() {
     local prompt="$1" default="${2:-}" var
+    prompt="$(tr_msg "$prompt")"
     if [ -n "$default" ]; then
         read -r -p "$prompt [$default]: " var
         printf '%s' "${var:-$default}"
