@@ -2,6 +2,7 @@
 #       标准宏都会被连带改到错误路径。这里改用自定义宏 install_dir。
 # 遵循 Fedora Packaging Guidelines：使用标准宏，不安装到 /opt。
 %global install_dir %{_datadir}/git-autosync
+%global _rpmlintrc %{name}.rpmlintrc
 
 # _unitdir 宏由 systemd-rpm-macros 包提供（见 BuildRequires）。
 # 若构建环境未安装该包，宏不会展开，这里回退到 systemd 标准单元目录，
@@ -12,14 +13,15 @@
 
 Name:           git-autosync
 Version:        2.15
-Release:        1%{?dist}
-Summary:        Git 自动同步工具包（本地文件夹自动同步 Gitee/GitHub）
+Release:        7%{?dist}
+Summary:        Git automatic synchronization toolkit for local folders
 
 License:        MIT
 URL:            https://github.com/dsduyopg/git_auto
 Source0:        https://github.com/dsduyopg/git_auto/releases/download/v%{version}/%{name}-%{version}.tar.gz
+Source1:        git-autosync.rpmlintrc
 # SHA-256 of the upstream source tarball (verify before building):
-# ad3c2b808602aa72e2be62dacb29d503d4d31dc6cb91bf27181fd94cff78d28c
+# c4514784b015e49eb4369690213e86ce93e814ed7980717112a8ba1ea55f4af0
 
 BuildArch:      noarch
 
@@ -59,7 +61,7 @@ NSSM）移植到 systemd + inotify。
 %check
 # 语法自检：确保所有 shell 脚本无语法错误
 for f in bin/* lib/*.sh; do
-    bash -n "$f" || { echo "语法错误: $f"; exit 1; }
+    bash -n "$f" || { echo "syntax error: $f"; exit 1; }
 done
 
 %install
@@ -113,9 +115,9 @@ chmod 0644 %{buildroot}%{_mandir}/man1/git-autosync.1.gz
 
 %post
 %systemd_post git-autosync-fetch.service git-autosync-fetch.timer
-echo "Git 自动同步工具包已安装"
-echo "  运行：sudo git-autosync          # 交互式主菜单"
-echo "       sudo git-autosync env      # 环境自检"
+echo "git-autosync has been installed."
+echo "  Run: sudo git-autosync          # interactive main menu"
+echo "       sudo git-autosync env      # environment check"
 
 %preun
 if [ "$1" -eq 0 ]; then
@@ -133,6 +135,11 @@ fi
 %systemd_postun_with_restart git-autosync-fetch.service git-autosync-fetch.timer
 
 %changelog
+* Tue Sep 01 2026 wowsony <dsduyopg@github.com> - 2.15-7
+- i18n: default English UI with optional Chinese mode
+- man page translated to English, install paths updated
+- English Summary
+- rpmlint: suppress false spelling-error warnings
 * Tue Sep 01 2026 wowsony <dsduyopg@github.com> - 2.15-1
 - Linux 版首发，移植自 Windows v2.15
 - 遵循 Fedora Packaging Guidelines：改用 /usr/share 标准路径，补充 logrotate 配置

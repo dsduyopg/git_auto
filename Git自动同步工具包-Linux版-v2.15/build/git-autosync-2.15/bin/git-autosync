@@ -80,10 +80,11 @@ select_repo() {
         warn "尚未登记任何仓库"
         return 1
     fi
-    echo "已登记的仓库："
+    # 提示与菜单必须走 stderr：调用方用 $(select_repo) 捕获 stdout 只取仓库名
+    echo "已登记的仓库：" >&2
     local i=1 r name
     while IFS= read -r r; do
-        echo "  $i) $r"
+        echo "  $i) $r" >&2
         i=$((i + 1))
     done <<EOF
 $repos
@@ -476,7 +477,7 @@ svc_op() {
     name="$(select_repo)" || return 1
     case "$op" in
         start)   systemctl start   "git-autosync@${name}.service" && ok "已启动 ${name}";;
-        stop)    systemctl stop "git-autosync@${name}.service" 2>/dev/null; systemctl reset-failed "git-autosync@${name}.service" 2>/dev/null; ok "已停止 ${name}";;
+        stop)    systemctl stop    "git-autosync@${name}.service" && ok "已停止 ${name}";;
         restart) systemctl restart "git-autosync@${name}.service" && ok "已重启 ${name}";;
         enable)  systemctl enable  "git-autosync@${name}.service" && ok "已设开机自启 ${name}";;
         disable) systemctl disable "git-autosync@${name}.service" && ok "已取消开机自启 ${name}";;
@@ -488,15 +489,33 @@ cmd_uninstall() {
     require_root
     local name repo_path
     name="$(select_repo)" || return 1
+    # 仓库名合法性校验：防止异常内容（如被菜单文本污染）导致后续命令误操作
+    case "$name" in
+        ''|*[!A-Za-z0-9_.-]*)
+            err "仓库名不合法：${name}"
+            return 1
+            ;;
+    esac
     repo_path="$(conf_get "${REPO_CONF_DIR}/${name}.conf" repo_path || true)"
 
     title "卸载服务：${name}"
     if has_systemd; then
-        systemctl disable --now "git-autosync@${name}.service" 2>/dev/null
-        systemctl reset-failed "git-autosync@${name}.service" 2>/dev/null
+        systemctl stop "git-autosync@${name}.service" || warn "停止服务失败：git-autosync@${name}.service"
+        systemctl disable "git-autosync@${name}.service" || warn "禁用服务失败：git-autosync@${name}.service"
+    else
+        warn "未检测到 systemd，跳过服务停用"
     fi
-    rm -f "${REPO_CONF_DIR}/${name}.conf"
-    ok "服务已卸载（仓库文件未删除）"
+    # rm -f 对不存在的文件也返回 0，必须确认文件确实消失才算成功
+    if [ ! -f "${REPO_CONF_DIR}/${name}.conf" ]; then
+        warn "配置文件不存在：${REPO_CONF_DIR}/${name}.conf"
+        return 1
+    fi
+    if rm -f "${REPO_CONF_DIR}/${name}.conf" && [ ! -f "${REPO_CONF_DIR}/${name}.conf" ]; then
+        ok "服务配置已删除（仓库文件未删除）"
+    else
+        warn "删除配置文件失败：${REPO_CONF_DIR}/${name}.conf"
+        return 1
+    fi
 
     if [ -n "$repo_path" ] && [ -d "$repo_path" ]; then
         echo
@@ -542,8 +561,8 @@ cmd_rebuild() {
     rm -f "${UNIT_DIR}/git-autosync@.service"
     if has_systemd; then
         while IFS= read -r r; do
-            systemctl disable --now "git-autosync@${r}.service" 2>/dev/null
-            systemctl reset-failed "git-autosync@${r}.service" 2>/dev/null
+            systemctl stop "git-autosync@${r}.service" 2>/dev/null
+            systemctl disable "git-autosync@${r}.service" 2>/dev/null
         done <<EOF
 $repos
 EOF
@@ -561,12 +580,66 @@ EOF
 }
 
 # ---------------- 11. 邮件通知 ----------------
-cmd_mail() { exec "${SELF_DIR}/git-autosync-mail-config" "$@"; }
+cmd_mail() { exec "${SELF_DIR}/git-autosync-mailsetup" "$@"; }
+
+# ---------------- 12. 界面语言 ----------------
+# 用法: git-autosync lang {en|zh}   （命令行直接切换）
+#       git-autosync lang           （交互式选择）
+# 默认英文(en)；选择写入 /etc/git-autosync/ui_lang 持久化（需 root）
+cmd_language() {
+    local cur="${GIT_AUTOSYNC_LANG:-en}" c
+
+    # 命令行模式
+    if [ -n "${1:-}" ]; then
+        case "$1" in
+            en)
+                if set_ui_lang en; then
+                    ok "Switched to English"
+                else
+                    err "Failed to save. Need root: sudo git-autosync lang en"; return 1
+                fi
+                ;;
+            zh)
+                if set_ui_lang zh; then
+                    ok "已切换为中文"
+                else
+                    err "保存失败，请用 root 运行：sudo git-autosync lang zh"; return 1
+                fi
+                ;;
+            *)
+                err "用法: git-autosync lang {en|zh}"; return 1
+                ;;
+        esac
+        return 0
+    fi
+
+    # 交互模式
+    title "Language / 语言"
+    if [ "$cur" = "zh" ]; then
+        ok "当前语言：中文 (zh)"
+    else
+        ok "Current language: English (en)"
+    fi
+    echo
+    echo "  1) English  (default)"
+    echo "  2) 中文 / Chinese"
+    echo "  0) Back / 返回"
+    read -r -p "Choose [0-2]: " c
+    case "$c" in
+        1) set_ui_lang en && ok "Switched to English" \
+             || warn "Failed to save. Try: sudo git-autosync lang en";;
+        2) set_ui_lang zh && ok "已切换为中文" \
+             || warn "保存失败，请用：sudo git-autosync lang zh";;
+        0) return 0;;
+        *) warn "Invalid choice / 无效选择";;
+    esac
+}
 
 # ---------------- 主菜单 ----------------
 show_menu() {
     clear 2>/dev/null
-    cat <<EOF
+    if [ "${GIT_AUTOSYNC_LANG:-en}" = "zh" ]; then
+        cat <<EOF
 
 ==============================================================
         Git 自动同步工具包 (Linux 版) v${VERSION}
@@ -585,29 +658,56 @@ show_menu() {
  10) 修复服务
  11) 彻底重建服务
  12) 邮件通知配置                同步成功/失败自动发邮件（可选）
+ 13) 语言设置 / Language         切换界面语言（当前：中文）
   0) 退出
 
 EOF
+    else
+        cat <<EOF
+
+==============================================================
+        Git AutoSync Toolkit (Linux) v${VERSION}
+        Local folder <-> Gitee / GitHub   automatic sync
+==============================================================
+
+  1) Environment check          Check Git / inotify / SSH key
+  2) Generate SSH key           Create a key and print the public key
+  3) New auto-push repo         Local folder -> cloud (real-time push)
+  4) Remove tracked directory   Stop pushing a subdirectory (files kept)
+  5) New cloud mirror pull      Cloud -> local (clone now + scheduled)
+  6) Scheduled pull service     Enable / disable / set interval
+  7) Show repositories and service status
+  8) Start / stop / restart service
+  9) Uninstall service (optionally delete repository)
+ 10) Repair services
+ 11) Rebuild all services
+ 12) Email notification         Mail on success/failure (optional)
+ 13) Language / 语言            Switch UI language (current: English)
+  0) Exit
+
+EOF
+    fi
 }
 
 interactive_menu() {
     while true; do
         show_menu
         local c
-        read -r -p "请选择 [0-12]: " c
+        read -r -p "$(tr_msg "请选择 [0-13]: ")" c
         case "$c" in
-            1)  cmd_env;       read -r -p "按回车继续...";;
-            2)  cmd_ssh_key;   read -r -p "按回车继续...";;
-            3)  cmd_new;       read -r -p "按回车继续...";;
-            4)  cmd_remove;    read -r -p "按回车继续...";;
-            5)  cmd_mirror;    read -r -p "按回车继续...";;
-            6)  cmd_fetch_timer; read -r -p "按回车继续...";;
-            7)  cmd_status;    read -r -p "按回车继续...";;
-            8)  svc_menu;      read -r -p "按回车继续...";;
-            9)  cmd_uninstall; read -r -p "按回车继续...";;
-            10) cmd_fix;       read -r -p "按回车继续...";;
-            11) cmd_rebuild;   read -r -p "按回车继续...";;
-            12) cmd_mail;      read -r -p "按回车继续...";;
+            1)  cmd_env;       read -r -p "$(tr_msg "按回车继续...")";;
+            2)  cmd_ssh_key;   read -r -p "$(tr_msg "按回车继续...")";;
+            3)  cmd_new;       read -r -p "$(tr_msg "按回车继续...")";;
+            4)  cmd_remove;    read -r -p "$(tr_msg "按回车继续...")";;
+            5)  cmd_mirror;    read -r -p "$(tr_msg "按回车继续...")";;
+            6)  cmd_fetch_timer; read -r -p "$(tr_msg "按回车继续...")";;
+            7)  cmd_status;    read -r -p "$(tr_msg "按回车继续...")";;
+            8)  svc_menu;      read -r -p "$(tr_msg "按回车继续...")";;
+            9)  cmd_uninstall; read -r -p "$(tr_msg "按回车继续...")";;
+            10) cmd_fix;       read -r -p "$(tr_msg "按回车继续...")";;
+            11) cmd_rebuild;   read -r -p "$(tr_msg "按回车继续...")";;
+            12) cmd_mail;      read -r -p "$(tr_msg "按回车继续...")";;
+            13) cmd_language;;
             0)  exit 0;;
             *)  warn "无效选择";;
         esac
@@ -617,9 +717,9 @@ interactive_menu() {
 svc_menu() {
     cmd_list
     echo
-    echo "  s) 启动   t) 停止   r) 重启   e) 开机自启   d) 取消自启"
+    echo "$(tr_msg "  s) 启动   t) 停止   r) 重启   e) 开机自启   d) 取消自启")"
     local c
-    read -r -p "选择操作（直接回车返回）: " c
+    read -r -p "$(tr_msg "选择操作（直接回车返回）: ")" c
     case "$c" in
         s) svc_op start;;
         t) svc_op stop;;
@@ -648,6 +748,7 @@ case "${1:-}" in
     fix)          cmd_fix;;
     rebuild)      cmd_rebuild;;
     mail)         cmd_mail;;
+    lang|language) cmd_language "${2:-}";;
     -h|--help|help)
         sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//';;
     "")           interactive_menu;;
