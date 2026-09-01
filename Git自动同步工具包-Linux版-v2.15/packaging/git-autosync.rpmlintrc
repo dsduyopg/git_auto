@@ -1,0 +1,12 @@
+# rpmlint 过滤规则
+#
+# 说明：以下均为 rpmlint 的误报，非真实问题。
+# 1) 技术术语被拼写检查器误判
+# 2) 文件名以 -config 结尾被误判为开发文件（实为邮件配置向导脚本）
+
+addFilter("spelling-error .* NSSM")
+addFilter("spelling-error .* FileSystemWatcher")
+addFilter("spelling-error .* Gitee")
+addFilter("spelling-error .* inotify")
+addFilter("spelling-error .* systemd")
+addFilter("devel-file-in-non-devel-package")

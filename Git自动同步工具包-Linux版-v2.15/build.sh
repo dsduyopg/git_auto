@@ -53,6 +53,7 @@ command -v rpmdev-setuptree >/dev/null 2>&1 && rpmdev-setuptree || mkdir -p ~/rp
 
 cp "${DIST_DIR}/${NAME}-${VERSION}.tar.gz" ~/rpmbuild/SOURCES/
 cp "${PROJ_DIR}/packaging/${NAME}.spec"    ~/rpmbuild/SPECS/
+cp "${PROJ_DIR}/packaging/${NAME}.rpmlintrc" ~/rpmbuild/SOURCES/ 2>/dev/null || true
 
 # ---- 4. 构建 rpm ----
 echo "[3/3] 构建 rpm ..."
