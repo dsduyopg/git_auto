@@ -1,6 +1,15 @@
 # 注意：不要覆盖 _prefix 宏，否则 _bindir / _unitdir / _sysconfdir 等
 #       标准宏都会被连带改到错误路径。这里改用自定义宏 install_dir。
-%global install_dir /opt/git-autosync
+# 遵循 Fedora Packaging Guidelines：使用标准宏，不安装到 /opt。
+%global install_dir %{_datadir}/git-autosync
+
+# _unitdir 宏由 systemd-rpm-macros 包提供。若构建环境（如 COPR 的
+# CentOS Stream / EPEL chroot）未安装该包，宏不会展开，rpmbuild 会把它
+# 当作字面文本，从而报 "File must begin with /" 错误。
+# 这里在宏未定义时回退到 systemd 的标准单元目录，保证跨环境可构建。
+%if %{undefined _unitdir}
+%global _unitdir /usr/lib/systemd/system
+%endif
 
 Name:           git-autosync
 Version:        2.15
@@ -8,8 +17,8 @@ Release:        1%{?dist}
 Summary:        Git 自动同步工具包（本地文件夹自动同步 Gitee/GitHub）
 
 License:        MIT
-URL:            https://github.com/dsduyopg/linux_heima
-Source0:        %{name}-%{version}.tar.gz
+URL:            https://github.com/dsduyopg/git_auto
+Source0:        https://github.com/dsduyopg/git_auto/releases/download/v%{version}/%{name}-%{version}.tar.gz
 
 BuildArch:      noarch
 
@@ -18,6 +27,7 @@ Requires:       git
 Requires:       inotify-tools
 Requires:       systemd
 Requires:       python3
+Requires:       logrotate
 
 %description
 Git 自动同步工具包 Linux 版，移植自 Windows v2.15（PowerShell + NSSM）。
@@ -26,9 +36,9 @@ Git 自动同步工具包 Linux 版，移植自 Windows v2.15（PowerShell + NSS
 
 技术映射（相对 Windows 原版）：
   NSSM 服务注册      ->  systemd 服务（每仓库一个 git-autosync@<名称>.service）
-  FileSystemWatcher  ->  inotifywait 实时监听（3 秒防抖合并）
+  FileSystemWatcher  ->  文件系统事件实时监听（3 秒防抖合并）
   定时拉取服务        ->  systemd timer（git-autosync-fetch.timer）
-  .NET SmtpClient    ->  python3 smtplib（邮件通知，可选）
+  .NET SmtpClient    ->  python3 SMTP（邮件通知，可选）
 
 功能：
   1. 本地文件夹自动推送 Gitee / GitHub
@@ -44,30 +54,40 @@ Git 自动同步工具包 Linux 版，移植自 Windows v2.15（PowerShell + NSS
 %build
 # 纯 Shell 脚本，无需编译
 
+%check
+# 语法自检：确保所有 shell 脚本无语法错误
+for f in bin/* lib/*.sh; do
+    bash -n "$f" || { echo "语法错误: $f"; exit 1; }
+done
+
 %install
 rm -rf %{buildroot}
 
-# 程序主体
+# 程序主体（LICENSE 由 license 宏单独安装，此处不复制以免文件重复）
 mkdir -p %{buildroot}%{install_dir}
 cp -r bin lib systemd %{buildroot}%{install_dir}/
-cp README.md VERSION.txt LICENSE %{buildroot}%{install_dir}/
+cp README.md VERSION.txt %{buildroot}%{install_dir}/
 cp install.sh uninstall.sh %{buildroot}%{install_dir}/
 if [ -d docs ]; then cp -r docs %{buildroot}%{install_dir}/; fi
 chmod 0755 %{buildroot}%{install_dir}/bin/*
 chmod 0644 %{buildroot}%{install_dir}/lib/*.sh
 chmod 0644 %{buildroot}%{install_dir}/systemd/*
 
-# 命令入口（/usr/bin/git-autosync -> /opt/git-autosync/bin/git-autosync）
+# logrotate 配置（防止 /var/log/git-autosync 下日志无限增长）
+mkdir -p %{buildroot}%{_sysconfdir}/logrotate.d
+install -m 0644 logrotate/git-autosync %{buildroot}%{_sysconfdir}/logrotate.d/git-autosync
+
+# 命令入口
 mkdir -p %{buildroot}%{_bindir}
 ln -sf %{install_dir}/bin/git-autosync %{buildroot}%{_bindir}/git-autosync
 
-# systemd 单元（/usr/lib/systemd/system）
+# systemd 单元
 mkdir -p %{buildroot}%{_unitdir}
 cp systemd/git-autosync@.service      %{buildroot}%{_unitdir}/
 cp systemd/git-autosync-fetch.service %{buildroot}%{_unitdir}/
 cp systemd/git-autosync-fetch.timer   %{buildroot}%{_unitdir}/
 
-# 配置与日志目录（/etc/git-autosync、/var/log/git-autosync）
+# 配置与日志目录
 mkdir -p %{buildroot}%{_sysconfdir}/git-autosync/repos
 mkdir -p %{buildroot}%{_localstatedir}/log/git-autosync
 
@@ -78,7 +98,6 @@ chmod 0644 %{buildroot}%{_mandir}/man1/git-autosync.1.gz
 
 %files
 %license LICENSE
-%doc README.md VERSION.txt
 %{install_dir}
 %{_bindir}/git-autosync
 %{_unitdir}/git-autosync@.service
@@ -88,6 +107,7 @@ chmod 0644 %{buildroot}%{_mandir}/man1/git-autosync.1.gz
 %dir %{_sysconfdir}/git-autosync/repos
 %dir %{_localstatedir}/log/git-autosync
 %{_mandir}/man1/git-autosync.1.gz
+%config(noreplace) %{_sysconfdir}/logrotate.d/git-autosync
 
 %post
 systemctl daemon-reload >/dev/null 2>&1 || :
@@ -115,7 +135,8 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 exit 0
 
 %changelog
-* Mon Aug 31 2026 wowsony <dsduyopg@github.com> - 2.15-1
+* Tue Sep 01 2026 wowsony <dsduyopg@github.com> - 2.15-1
 - Linux 版首发，移植自 Windows v2.15
+- 遵循 Fedora Packaging Guidelines：改用 /usr/share 标准路径，补充 logrotate 配置
 - systemd 服务替代 NSSM，inotifywait 替代 FileSystemWatcher
-- 保留全部原功能：实时推送、定时拉取、服务管理、排除目录、index.lock 清理、邮件通知
+- 含完整中文使用手册与 man 手册页
