@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 # ============================================================
-# Git 自动同步工具包 (Linux 版) - 主命令
-# 移植自 Windows v2.15：
-#   service_manager.ps1 + new_sync_repo_generic.ps1 + 各 .bat 入口
-#   NSSM 服务注册  ->  systemctl 管理 systemd 服务
+# Git AutoSync Toolkit (Linux) - main command
+# Ported from Windows v2.15:
+#   service_manager.ps1 + new_sync_repo_generic.ps1 + .bat entries
+#   NSSM service registration -> systemctl / systemd services
 #   FileSystemWatcher -> inotifywait
 #
-# 用法:
-#   git-autosync              交互式主菜单
-#   git-autosync env          环境自检
-#   git-autosync ssh-key      生成 SSH 密钥
-#   git-autosync new          新建自动推送仓库（本地 -> 云端）
-#   git-autosync remove       移除推送目录（停止推送某个子目录）
-#   git-autosync mirror       新建云端镜像拉取（云端 -> 本地）
-#   git-autosync fetch-timer  定时拉取服务管理
-#   git-autosync list         列出已登记仓库
-#   git-autosync status       查看服务状态
-#   git-autosync {start|stop|restart|enable|disable} <仓库名>
-#   git-autosync uninstall <仓库名>   卸载服务
-#   git-autosync fix          修复所有服务
-#   git-autosync rebuild      彻底重建所有服务
-#   git-autosync mail         邮件通知配置
+# Usage:
+#   git-autosync                interactive main menu
+#   git-autosync env            environment check
+#   git-autosync ssh-key        generate an SSH key
+#   git-autosync new            create auto-push repo (local -> cloud)
+#   git-autosync remove         remove a tracked directory (stop pushing it)
+#   git-autosync mirror         create cloud mirror pull (cloud -> local)
+#   git-autosync fetch-timer    scheduled pull service
+#   git-autosync list           list registered repositories
+#   git-autosync status         show service status
+#   git-autosync {start|stop|restart|enable|disable} <repo name>
+#   git-autosync uninstall <repo name>   uninstall a service
+#   git-autosync fix            repair all services
+#   git-autosync rebuild        rebuild all services
+#   git-autosync mail           email notification setup
 # ============================================================
 
 set -uo pipefail
@@ -54,8 +54,12 @@ ensure_units() {
     if [ -d "$UNIT_DIR" ]; then
         install -m 0644 "${src}/git-autosync@.service"        "${UNIT_DIR}/" 2>/dev/null
         install -m 0644 "${src}/git-autosync-fetch.service"   "${UNIT_DIR}/" 2>/dev/null
-        [ -f "${UNIT_DIR}/git-autosync-fetch.timer" ] || \
+        if [ -f "${UNIT_DIR}/git-autosync-fetch.timer" ]; then
+            sed -i 's|^Description=.*|Description=Git AutoSync scheduled mirror pull|' \
+                "${UNIT_DIR}/git-autosync-fetch.timer" 2>/dev/null || :
+        else
             install -m 0644 "${src}/git-autosync-fetch.timer" "${UNIT_DIR}/" 2>/dev/null
+        fi
         systemctl daemon-reload 2>/dev/null
     fi
 }
@@ -81,7 +85,7 @@ select_repo() {
         return 1
     fi
     # 提示与菜单必须走 stderr：调用方用 $(select_repo) 捕获 stdout 只取仓库名
-    echo "已登记的仓库：" >&2
+    echo "$(tr_msg "已登记的仓库：")" >&2
     local i=1 r name
     while IFS= read -r r; do
         echo "  $i) $r" >&2
@@ -89,7 +93,9 @@ select_repo() {
     done <<EOF
 $repos
 EOF
-    read -r -p "请选择编号: " sel
+    read -r -p "$(tr_msg "请选择编号: ")" sel
+    [ -n "$sel" ] || return 1
+    [[ "$sel" =~ ^[0-9]+$ ]] || return 1
     name="$(printf '%s\n' "$repos" | sed -n "${sel}p")"
     [ -n "$name" ] || return 1
     printf '%s' "$name"
@@ -163,7 +169,7 @@ cmd_new() {
     if [ ${#keys[@]} -gt 0 ]; then
         local i=1
         for k in "${keys[@]}"; do echo "  $i) $k"; i=$((i + 1)); done
-        read -r -p "选择编号（直接回车用第 1 个，或输入完整路径）: " choice
+        read -r -p "$(tr_msg "选择编号（直接回车用第 1 个，或输入完整路径）: ")" choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#keys[@]} ]; then
             ssh_key="${keys[$((choice - 1))]}"
         elif [ -n "$choice" ]; then
@@ -208,10 +214,10 @@ cmd_new() {
     # --- 第 2 步：平台与分支 ---
     hr
     local plat branch
-    echo "第 2 步：选择平台"
-    echo "  1) Gitee  （默认分支 master）"
-    echo "  2) GitHub （默认分支 main）"
-    read -r -p "选择 [1/2]（默认 1）: " plat
+    echo "$(tr_msg "第 2 步：选择平台")"
+    echo "$(tr_msg "  1) Gitee  （默认分支 master）")"
+    echo "$(tr_msg "  2) GitHub （默认分支 main）")"
+    read -r -p "$(tr_msg "选择 [1/2]（默认 1）: ")" plat
     if [ "$plat" = "2" ]; then branch="main"; else branch="master"; fi
     branch="$(ask "  确认分支名" "$branch")"
 
@@ -332,7 +338,7 @@ cmd_remove() {
 
     export GIT_SSH_COMMAND="$(ssh_cmd_for "$(conf_get "${REPO_CONF_DIR}/${name}.conf" ssh_key || true)")"
     git -C "$repo_path" add -A 2>/dev/null
-    git -C "$repo_path" commit -q -m "auto-sync: 移除推送 ${rel}" 2>/dev/null
+    git -C "$repo_path" commit -q -m "$(tr_msg "auto-sync: 移除推送 ${rel}")" 2>/dev/null
     if git -C "$repo_path" push origin "$(conf_get "${REPO_CONF_DIR}/${name}.conf" branch || echo main)" 2>&1 | tail -n3; then
         ok "已移除推送：$rel（本地文件保留）"
     else
@@ -379,13 +385,13 @@ cmd_fetch_timer() {
         systemctl is-active git-autosync-fetch.timer >/dev/null 2>&1 \
             && ok "当前状态：已启用" || warn "当前状态：未启用"
     fi
-    echo "  1) 启用定时拉取（开机自启 + 定时触发）"
-    echo "  2) 停用定时拉取"
-    echo "  3) 设置拉取间隔（分钟）"
-    echo "  4) 立即执行一次拉取"
-    echo "  0) 返回"
+    echo "$(tr_msg "  1) 启用定时拉取（开机自启 + 定时触发）")"
+    echo "$(tr_msg "  2) 停用定时拉取")"
+    echo "$(tr_msg "  3) 设置拉取间隔（分钟）")"
+    echo "$(tr_msg "  4) 立即执行一次拉取")"
+    echo "$(tr_msg "  0) 返回")"
     local c min
-    read -r -p "选择: " c
+    read -r -p "$(tr_msg "选择: ")" c
     case "$c" in
         1)
             if has_systemd; then
@@ -407,7 +413,7 @@ cmd_fetch_timer() {
                 if [ -d "$UNIT_DIR" ]; then
                     cat > "${UNIT_DIR}/git-autosync-fetch.timer" <<EOF
 [Unit]
-Description=定时自动拉取已登记的云端 Git 镜像
+Description=Git AutoSync scheduled mirror pull
 
 [Timer]
 OnBootSec=5min
@@ -443,7 +449,7 @@ cmd_list() {
         st="unknown"
         if has_systemd; then
             systemctl is-active "git-autosync@${r}.service" >/dev/null 2>&1 && st="running" || st="stopped"
-            systemctl is-enabled "git-autosync@${r}.service" >/dev/null 2>&1 && st="${st}(开机自启)"
+            systemctl is-enabled "git-autosync@${r}.service" >/dev/null 2>&1 && st="${st}$(tr_msg "(开机自启)")"
         fi
         printf '  %-24s %-14s %s\n' "$r" "$st" "$repo_path"
     done <<EOF
@@ -473,8 +479,8 @@ EOF
 svc_op() {
     local op="$1"
     require_root
-    local name
-    name="$(select_repo)" || return 1
+    local name="${2:-}"
+    [ -n "$name" ] || name="$(select_repo)" || return 1
     case "$op" in
         start)   systemctl start   "git-autosync@${name}.service" && ok "已启动 ${name}";;
         stop)    systemctl stop    "git-autosync@${name}.service" && ok "已停止 ${name}";;
@@ -487,8 +493,8 @@ svc_op() {
 # ---------------- 9. 卸载服务 ----------------
 cmd_uninstall() {
     require_root
-    local name repo_path
-    name="$(select_repo)" || return 1
+    local name="${1:-}" repo_path
+    [ -n "$name" ] || name="$(select_repo)" || return 1
     # 仓库名合法性校验：防止异常内容（如被菜单文本污染）导致后续命令误操作
     case "$name" in
         ''|*[!A-Za-z0-9_.-]*)
@@ -580,7 +586,7 @@ EOF
 }
 
 # ---------------- 11. 邮件通知 ----------------
-cmd_mail() { exec "${SELF_DIR}/git-autosync-mailsetup" "$@"; }
+cmd_mail() { exec "${SELF_DIR}/git-autosync-mail-config" "$@"; }
 
 # ---------------- 12. 界面语言 ----------------
 # 用法: git-autosync lang {en|zh}   （命令行直接切换）
@@ -614,16 +620,16 @@ cmd_language() {
     fi
 
     # 交互模式
-    title "Language / 语言"
+    title "$(tr_msg "Language / 语言")"
     if [ "$cur" = "zh" ]; then
-        ok "当前语言：中文 (zh)"
+        ok "$(tr_msg "当前语言：中文 (zh)")"
     else
         ok "Current language: English (en)"
     fi
     echo
     echo "  1) English  (default)"
-    echo "  2) 中文 / Chinese"
-    echo "  0) Back / 返回"
+    echo "$(tr_msg "  2) 中文 / Chinese")"
+    echo "$(tr_msg "  0) Back / 返回")"
     read -r -p "Choose [0-2]: " c
     case "$c" in
         1) set_ui_lang en && ok "Switched to English" \
@@ -631,7 +637,7 @@ cmd_language() {
         2) set_ui_lang zh && ok "已切换为中文" \
              || warn "保存失败，请用：sudo git-autosync lang zh";;
         0) return 0;;
-        *) warn "Invalid choice / 无效选择";;
+        *) warn "$(tr_msg "Invalid choice / 无效选择")";;
     esac
 }
 
@@ -682,7 +688,7 @@ EOF
  10) Repair services
  11) Rebuild all services
  12) Email notification         Mail on success/failure (optional)
- 13) Language / 语言            Switch UI language (current: English)
+  13) $(tr_msg "Language / 语言")            Switch UI language (current: English)
   0) Exit
 
 EOF
@@ -739,12 +745,12 @@ case "${1:-}" in
     fetch-timer)  cmd_fetch_timer;;
     list)         cmd_list;;
     status)       cmd_status;;
-    start)        svc_op start;;
-    stop)         svc_op stop;;
-    restart)      svc_op restart;;
-    enable)       svc_op enable;;
-    disable)      svc_op disable;;
-    uninstall)    cmd_uninstall;;
+    start)        svc_op start "${2:-}";;
+    stop)         svc_op stop "${2:-}";;
+    restart)      svc_op restart "${2:-}";;
+    enable)       svc_op enable "${2:-}";;
+    disable)      svc_op disable "${2:-}";;
+    uninstall)    cmd_uninstall "${2:-}";;
     fix)          cmd_fix;;
     rebuild)      cmd_rebuild;;
     mail)         cmd_mail;;

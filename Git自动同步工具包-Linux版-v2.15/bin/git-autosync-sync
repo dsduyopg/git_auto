@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 # ============================================================
-# Git 自动同步工具包 (Linux 版) - 实时同步守护
-# 移植自 Windows 版 git_sync_realtime_*.ps1
+# Git AutoSync Toolkit (Linux) - real-time sync daemon
+# Ported from the Windows version: git_sync_realtime_*.ps1
 #   FileSystemWatcher  ->  inotifywait
-#   NSSM 服务          ->  systemd 服务 (git-autosync@<名称>.service)
+#   NSSM service       ->  systemd service (git-autosync@<name>.service)
 #
-# 用法: git-autosync-sync <仓库名>
-# 配置: /etc/git-autosync/repos/<仓库名>.conf
+# Usage: git-autosync-sync <repo-name>
+# Config: /etc/git-autosync/repos/<repo-name>.conf
 # ============================================================
 
 set -uo pipefail
+
+cleanup() {
+    trap - TERM INT
+    jobs -p 2>/dev/null | xargs -r kill 2>/dev/null || :
+    exit 0
+}
+trap cleanup TERM INT
 
 SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
@@ -18,17 +25,17 @@ SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
 
 REPO_NAME="${1:-}"
 if [ -z "$REPO_NAME" ]; then
-    err "用法: $(basename "$0") <仓库名>"
+    err "Usage: $(basename "$0") <repo-name>"
     exit 1
 fi
 
 CONF="${REPO_CONF_DIR}/${REPO_NAME}.conf"
 if [ ! -f "$CONF" ]; then
-    err "找不到仓库配置：$CONF"
+    err "Repository config not found: $CONF"
     exit 1
 fi
 
-# ---- 读取仓库配置 ----
+# ---- Read repository config ----
 REPO_PATH="$(conf_get "$CONF" repo_path)"
 BRANCH="$(conf_get "$CONF" branch || echo main)"
 REMOTE="$(conf_get "$CONF" remote || echo origin)"
@@ -41,136 +48,139 @@ LOG_FILE="$(conf_get "$CONF" log_file || echo "${REPO_PATH}/git_sync.log")"
 EXTRA_EXCLUDE="$(conf_get "$CONF" exclude || true)"
 
 if [ -z "$REPO_PATH" ]; then
-    err "配置缺少 repo_path：$CONF"
+    err "Config is missing repo_path: $CONF"
     exit 1
 fi
 
-# ---- 日志（写文件 + 输出，systemd 会收集到 journal） ----
+# ---- Logging (file + stdout; systemd collects it into the journal) ----
 log() { log_line "$LOG_FILE" "$*"; }
 
-# ---- 发送邮件通知（失败绝不影响同步主流程） ----
+# ---- Send email notification (failure never blocks the sync flow) ----
 notify_mail() {
     local success="$1" detail="$2" subject body files
     if [ "$MAIL_NOTIFY" != "1" ]; then return 0; fi
     if [ ! -x "${SELF_DIR}/git-autosync-mail" ]; then return 0; fi
 
     if [ "$success" = "1" ]; then
-        subject="[Git同步成功] ${REPO_PATH}"
+        subject="[Git sync OK] ${REPO_PATH}"
     else
-        subject="[Git同步失败] ${REPO_PATH}"
+        subject="[Git sync FAILED] ${REPO_PATH}"
     fi
 
     files="$(changed_files)"
-    body="仓库: ${REPO_PATH}
-分支: ${REMOTE}/${BRANCH}
-时间: $(date '+%Y-%m-%d %H:%M:%S')
-结果: $([ "$success" = "1" ] && echo '推送成功' || echo '推送失败')
+    body="Repository: ${REPO_PATH}
+Branch: ${REMOTE}/${BRANCH}
+Time: $(date '+%Y-%m-%d %H:%M:%S')
+Result: $([ "$success" = "1" ] && echo 'push succeeded' || echo 'push failed')
 ${detail}"
     if [ -n "$files" ]; then
         body="${body}
 
-变更文件:
+Changed files:
 ${files}"
     fi
 
     "${SELF_DIR}/git-autosync-mail" -s "$subject" -b "$body" >/dev/null 2>&1 || true
 }
 
-# ---- 最近变更文件列表（对应 Get-ChangedFiles，支持中文文件名） ----
+# ---- Recently changed files (see Get-ChangedFiles; supports non-ASCII names) ----
 changed_files() {
     git -C "$REPO_PATH" -c core.quotePath=false \
         log --since="10 minutes ago" --name-only --pretty=format: . 2>/dev/null \
         | sed '/^$/d' | sort -u | head -50
 }
 
-# ---- 核心同步：add -> commit -> push（含重试） ----
+# ---- Core sync: add -> commit -> push (with retry) ----
 sync_now() {
     local status msg out i
 
-    # v2.14 起的核心逻辑：清理残留 index.lock，避免同步卡死
+    # Core behavior since v2.14: clear a stale index.lock so syncing cannot stall
     clear_index_lock "$REPO_PATH"
 
     if ! git -C "$REPO_PATH" add -A >/dev/null 2>&1; then
-        log "git add 失败"
-        notify_mail 0 "git add 失败"
+        log "git add failed"
+        notify_mail 0 "git add failed"
         return 1
     fi
 
     status="$(git -C "$REPO_PATH" status --porcelain 2>/dev/null)"
     if [ -z "$status" ]; then
-        log "无实际文件变动，跳过提交"
+        log "No real file changes; skipping commit"
         return 0
     fi
 
     msg="auto-sync: $(date '+%Y-%m-%d %H:%M:%S')"
     if ! git -C "$REPO_PATH" commit -m "$msg" >/dev/null 2>&1; then
-        log "git commit 失败"
-        notify_mail 0 "git commit 失败"
+        log "git commit failed"
+        notify_mail 0 "git commit failed"
         return 1
     fi
-    log "已提交：$msg"
+    log "Committed: $msg"
 
     for ((i = 1; i <= RETRY_TIMES; i++)); do
         if out="$(git -C "$REPO_PATH" push "$REMOTE" "$BRANCH" 2>&1)"; then
-            log "推送成功 -> ${REMOTE}/${BRANCH}"
-            notify_mail 1 "已推送到 ${REMOTE}/${BRANCH}"
+            log "Push succeeded -> ${REMOTE}/${BRANCH}"
+            notify_mail 1 "Pushed to ${REMOTE}/${BRANCH}"
             return 0
         fi
-        log "推送失败(第 ${i}/${RETRY_TIMES} 次)：${out}"
-        # 友好提示：SSH 公钥问题是 push 失败最常见的原因
+        log "Push failed (attempt ${i}/${RETRY_TIMES}): ${out}"
+        # Friendly hint: SSH public key problems are the most common cause of push failure
         if echo "$out" | grep -qiE 'Permission denied|publickey|Could not read from remote repository'; then
-            log "提示：远端拒绝访问，多为 SSH 公钥未配置或未被信任所致。"
-            log "      请运行：sudo git-autosync ssh-key  生成密钥，"
-            log "      并把输出的公钥添加到 Gitee/GitHub 的 SSH Keys 设置里。"
+            log "Hint: the remote refused access; usually the SSH public key is missing or untrusted."
+            log "      Run: sudo git-autosync ssh-key   to generate a key,"
+            log "      then add the printed public key to SSH Keys in Gitee/GitHub."
         fi
         [ "$i" -lt "$RETRY_TIMES" ] && sleep "$RETRY_WAIT"
     done
 
-    log "推送失败，超过重试次数，将在下次变化时重试"
-    notify_mail 0 "推送失败，超过重试次数。最后一次错误: ${out}"
+    log "Push failed after all retries; will retry on the next change"
+    notify_mail 0 "Push failed after all retries. Last error: ${out}"
     return 1
 }
 
-# ---- 前置检查 ----
-if ! need_cmd git; then err "未找到 git 命令，请先安装 Git"; exit 1; fi
-if [ ! -d "$REPO_PATH" ]; then err "目录不存在：${REPO_PATH}"; exit 1; fi
-if [ ! -d "${REPO_PATH}/.git" ]; then err "该目录不是 git 仓库：${REPO_PATH}"; exit 1; fi
+# ---- Pre-flight checks ----
+if ! need_cmd git; then err "git command not found, please install Git"; exit 1; fi
+if [ ! -d "$REPO_PATH" ]; then err "Directory does not exist: ${REPO_PATH}"; exit 1; fi
+if [ ! -d "${REPO_PATH}/.git" ]; then err "Not a git repository: ${REPO_PATH}"; exit 1; fi
 if ! git -C "$REPO_PATH" remote 2>/dev/null | grep -qx "$REMOTE"; then
-    err "未配置远程仓库 ${REMOTE}"
+    err "Remote ${REMOTE} is not configured"
     exit 1
 fi
 
-# 指定 SSH 私钥（对应 core.sshCommand）
+# Use a specific SSH private key (equivalent to core.sshCommand)
 if [ -n "$SSH_KEY" ]; then
     export GIT_SSH_COMMAND="$(ssh_cmd_for "$SSH_KEY")"
 fi
 
 log "============================================"
-log "Git 实时同步启动：${REPO_PATH}（分支 ${BRANCH}，防抖 ${DEBOUNCE}s）"
+log "Git real-time sync started: ${REPO_PATH} (branch ${BRANCH}, debounce ${DEBOUNCE}s)"
 
-# ---- 启动时先完整同步一次 ----
-log "启动时执行一次完整同步..."
+# ---- Run one full sync at startup ----
+log "Running a full sync at startup..."
 sync_now
 
-# ---- 实时监听 ----
+# ---- Real-time watching ----
 if ! need_cmd inotifywait; then
-    err "未找到 inotifywait，无法实时监听。请安装 inotify-tools："
+    err "inotifywait not found; cannot watch in real time. Please install inotify-tools:"
     err "  sudo dnf install -y inotify-tools   # RHEL/CentOS/Fedora"
     err "  sudo apt install -y inotify-tools   # Debian/Ubuntu"
     exit 1
 fi
 
-log "开始实时监听目录：${REPO_PATH}"
+log "Watching directory in real time: ${REPO_PATH}"
 
-# 排除：.git 目录（否则 git 操作自身会触发无限循环）、同步日志、用户自定义项
+# Exclusions: the .git directory (otherwise git's own writes trigger an endless loop),
+# the sync log, and any user-defined patterns
 EXCLUDE='/\.git($|/)|/\.git$|git_sync.*\.log$'
 if [ -n "$EXTRA_EXCLUDE" ]; then
     EXCLUDE="${EXCLUDE}|${EXTRA_EXCLUDE}"
 fi
 
-# 防抖主循环：
-#   read -t N 在 N 秒内读不到新事件即表示进入静默期，此时执行一次同步，
-#   从而把防抖窗口内的连续改动合并成一次提交（等价 Windows 版 3 秒防抖语义）
+# Debounce loop:
+#   read -t N returns when no new event arrives within N seconds, meaning the
+#   directory went quiet; that is when we sync once. This merges the continuous
+#   changes inside the window into a single commit (same 3s debounce semantics
+#   as the Windows version).
 pending=0
 while true; do
     if read -r -t "$DEBOUNCE" _line; then

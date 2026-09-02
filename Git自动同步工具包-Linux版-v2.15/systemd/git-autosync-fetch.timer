@@ -1,6 +1,6 @@
 [Unit]
-Description=定时自动拉取已登记的云端 Git 镜像
-Documentation=file:/opt/git-autosync/README.md
+Description=Git AutoSync scheduled mirror pull
+Documentation=file:/usr/share/git-autosync/README.md
 
 [Timer]
 OnBootSec=5min

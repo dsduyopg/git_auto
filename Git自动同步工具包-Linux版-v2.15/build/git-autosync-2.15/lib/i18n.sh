@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # ============================================================
 # i18n - Internationalization layer for git-autosync
 #
@@ -173,7 +172,7 @@ if declare -A I18N 2>/dev/null; then
     I18N["请先安装 git"]="Please install git first"
     I18N["缺少依赖命令："]="Missing required command: "
     I18N["已清理残留锁："]="Removed stale lock: "
-    I18N["秒未变动）"]="s unchanged)"
+    I18N["秒未变动)"]="s unchanged)"
     I18N["创建失败"]="Creation failed"
     I18N["未知命令："]="Unknown command: "
     I18N["（用 git-autosync help 查看用法）"]=" (run 'git-autosync help' for usage)"
@@ -231,6 +230,31 @@ if declare -A I18N 2>/dev/null; then
     I18N["已切换为中文"]="Switched to Chinese"
     I18N["已切换为英文"]="Switched to English"
     I18N["用法: git-autosync lang {en|zh}"]="Usage: git-autosync lang {en|zh}"
+
+    # -- main script: sub-command titles and language menu (added in 2.15-9) --
+    I18N["新建自动推送仓库（本地文件夹 → 云端，实时自动提交推送）"]="New auto-push repository (local folder -> cloud, real-time commit and push)"
+    I18N["新建云端镜像拉取（云端 → 本地，定时自动更新）"]="New cloud mirror pull (cloud -> local, clone now plus scheduled update)"
+    I18N["与 systemd 单元），请用 sudo 运行"]="and systemd units). Please run with sudo"
+    I18N["保存失败，请用 root 运行："]="Failed to save; run as root: "
+    I18N["保存失败，请用："]="Failed to save; run: "
+    I18N["当前语言："]="Current language: "
+    I18N["中文 (zh)"]="Chinese (zh)"
+    I18N["Language / 语言"]="Language"
+    I18N["当前语言：中文 (zh)"]="Current language: Chinese (zh)"
+    I18N["  2) 中文 / Chinese"]="  2) Chinese"
+    I18N["  0) Back / 返回"]="  0) Back"
+    I18N["Invalid choice / 无效选择"]="Invalid choice"
+    I18N["  0) 返回"]="  0) Back"
+    I18N["（"]="("
+    I18N["）"]=")"
+    I18N["："]=": "
+    I18N["，"]=", "
+    I18N["；"]="; "
+    I18N["？"]="?"
+    I18N["！"]="!"
+    I18N["　"]=" "
+    I18N["…"]="..."
+    I18N["→"]="->"
 
     # ---- sort keys longest-first so longer phrases win ----
     I18N_KEYS=()

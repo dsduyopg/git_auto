@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================
-# Git 自动同步工具包 (Linux 版) - 环境自检
-# 移植自 Windows 版 环境自检.bat
-# 检查：Git / inotify-tools / SSH 密钥 / systemd / python3（邮件可选）
+# Git AutoSync Toolkit (Linux) - environment check
+# Ported from the Windows version: environment-check.bat
+# Checks: Git / inotify-tools / SSH key / systemd / python3 (mail optional)
 # ============================================================
 
 set -uo pipefail
@@ -12,92 +12,92 @@ SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
 # shellcheck source=/dev/null
 . "${SELF_DIR}/../lib/common.sh"
 
-title "Git 自动同步工具包 - 环境自检"
+title "Git AutoSync Toolkit - Environment Check"
 hr
 
 fatal=0
 
 # ---- 1. Git ----
 if need_cmd git; then
-    ok "Git 已安装：$(git --version)"
+    ok "Git installed: $(git --version)"
 else
-    err "Git 未安装（必需）"
-    echo "    安装：sudo dnf install -y git     # RHEL/CentOS/Fedora/Alma"
-    echo "         sudo apt install -y git     # Debian/Ubuntu"
+    err "Git is not installed (required)"
+    echo "    Install: sudo dnf install -y git     # RHEL/CentOS/Fedora/Alma"
+    echo "             sudo apt install -y git     # Debian/Ubuntu"
     fatal=1
 fi
 
-# ---- 2. inotify-tools（实时监听依赖） ----
+# ---- 2. inotify-tools (required for real-time watching) ----
 if need_cmd inotifywait; then
-    ok "inotify-tools 已安装（实时监听可用）"
+    ok "inotify-tools installed (real-time watching available)"
 else
-    err "inotify-tools 未安装（实时监听必需）"
-    echo "    安装：sudo dnf install -y inotify-tools"
-    echo "         sudo apt install -y inotify-tools"
+    err "inotify-tools is not installed (required for real-time watching)"
+    echo "    Install: sudo dnf install -y inotify-tools"
+    echo "             sudo apt install -y inotify-tools"
     fatal=1
 fi
 
-# ---- 3. SSH 密钥 ----
+# ---- 3. SSH key ----
 ssh_dir="${HOME}/.ssh"
 if [ -d "$ssh_dir" ]; then
     keys="$(find "$ssh_dir" -maxdepth 1 -type f \
         ! -name '*.pub' ! -name 'known_hosts' ! -name 'config' \
         ! -name 'authorized_keys' 2>/dev/null | sort)"
     if [ -n "$keys" ]; then
-        ok "SSH 私钥："
+        ok "SSH private keys:"
         echo "$keys" | while read -r k; do echo "    - $k"; done
         pub="$(find "$ssh_dir" -maxdepth 1 -name '*.pub' 2>/dev/null | head -n1)"
         if [ -n "$pub" ]; then
-            echo "    公钥内容（添加到 Gitee/GitHub）："
+            echo "    Public key (add this to Gitee/GitHub):"
             sed 's/^/      /' "$pub"
         fi
     else
-        warn "~/.ssh 存在但没有私钥，建议先生成：git-autosync ssh-key"
+        warn "~/.ssh exists but contains no private key. Generate one with: git-autosync ssh-key"
     fi
 else
-    warn "未找到 SSH 目录 ${ssh_dir}，建议先生成密钥：git-autosync ssh-key"
+    warn "SSH directory not found: ${ssh_dir}. Generate a key with: git-autosync ssh-key"
 fi
 
 # ---- 4. systemd ----
 if has_systemd; then
-    ok "systemd 可用（服务方式运行）"
+    ok "systemd available (runs as a service)"
 else
-    warn "当前环境没有运行 systemd（WSL/容器常见）"
-    echo "    仍可使用：git-autosync-sync <仓库名> 直接前台运行同步"
+    warn "systemd is not running here (common in WSL/containers)"
+    echo "    You can still run: git-autosync-sync <repo-name> in the foreground"
 fi
 
-# ---- 5. python3（邮件通知可选依赖） ----
+# ---- 5. python3 (optional, for email notification) ----
 if need_cmd python3; then
-    ok "python3 已安装（邮件通知可用）"
+    ok "python3 installed (email notification available)"
 else
-    warn "python3 未安装，邮件通知功能不可用（同步功能不受影响）"
+    warn "python3 is not installed; email notification is unavailable (sync is unaffected)"
 fi
 
-# ---- 6. 安装位置与配置 ----
+# ---- 6. Install location and configuration ----
 hr
 if [ -d "$PREFIX" ]; then
-    ok "安装目录：${PREFIX}"
+    ok "Install directory: ${PREFIX}"
 else
-    warn "安装目录不存在：${PREFIX}（若直接运行源码，可设置 GIT_AUTOSYNC_PREFIX 指向本目录）"
+    warn "Install directory not found: ${PREFIX} (if running from source, set GIT_AUTOSYNC_PREFIX to this directory)"
 fi
 
 if [ -d "$CONF_DIR" ]; then
-    ok "配置目录：${CONF_DIR}"
+    ok "Config directory: ${CONF_DIR}"
     repos="$(list_repos)"
     if [ -n "$repos" ]; then
-        echo "    已登记仓库："
+        echo "    Registered repositories:"
         printf '%s\n' "$repos" | sed 's/^/      - /'
     else
-        echo "    尚未登记任何仓库"
+        echo "    No repositories registered yet"
     fi
 else
-    warn "配置目录不存在：${CONF_DIR}（执行 install.sh 会自动创建）"
+    warn "Config directory not found: ${CONF_DIR} (install.sh creates it automatically)"
 fi
 
 hr
 if [ "$fatal" -eq 0 ]; then
-    ok "环境检查通过，可以开始使用：git-autosync"
+    ok "Environment check passed. You can start with: git-autosync"
 else
-    err "存在必需依赖缺失，请先按上面提示安装后再使用"
+    err "Missing required dependencies. Install them as shown above, then try again"
 fi
 exit "$fatal"

@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # ============================================================
-# Git 自动同步工具包 (Linux 版) - 云端镜像拉取器
-# 移植自 Windows 版 change_fetcher_generic.ps1
-#   NSSM 常驻服务 GitMirrorFetcher -> systemd timer git-autosync-fetch.timer
+# Git AutoSync Toolkit (Linux) - cloud mirror fetcher
+# Ported from the Windows version: change_fetcher_generic.ps1
+#   NSSM resident service GitMirrorFetcher -> systemd timer git-autosync-fetch.timer
 #
-# 用法:
-#   git-autosync-fetch          执行一轮后立即退出（供 systemd timer 调用）
-#   git-autosync-fetch --daemon 常驻循环，按 interval 分钟定时拉取（等价 Windows 版行为）
+# Usage:
+#   git-autosync-fetch           run one round and exit (used by the systemd timer)
+#   git-autosync-fetch --daemon  resident loop, pull every interval minutes
+#                                (same behavior as the Windows version)
 #
-# 登记表: /etc/git-autosync/mirror_config.txt
-#   每行格式:  目标目录|远端URL|分支|SSH密钥路径
-#   第 4 列可省略（使用默认密钥）；# 开头为注释
-# 间隔设置: /etc/git-autosync/mirror_settings.txt -> interval=60
+# Registry: /etc/git-autosync/mirror_config.txt
+#   Each line:  target-directory|remote-URL|branch|SSH-key-path
+#   The 4th column is optional (default key is used); lines starting with # are comments
+# Interval: /etc/git-autosync/mirror_settings.txt -> interval=60
 # ============================================================
 
 set -uo pipefail
@@ -27,7 +28,7 @@ mkdir -p "$LOG_DIR" 2>/dev/null
 
 log() { log_line "$LOG_FILE" "$*"; }
 
-# ---- 拉取间隔（分钟），默认 60，范围 1-1440 ----
+# ---- Pull interval (minutes), default 60, range 1-1440 ----
 INTERVAL=60
 if [ -f "$MIRROR_SETTINGS" ]; then
     _v="$(conf_get "$MIRROR_SETTINGS" interval || true)"
@@ -36,13 +37,13 @@ if [ -f "$MIRROR_SETTINGS" ]; then
     fi
 fi
 
-# ---- 是否清理未跟踪文件（设置 GIT_MIRROR_CLEAN=0 可关闭） ----
+# ---- Whether to clean untracked files (set GIT_MIRROR_CLEAN=0 to disable) ----
 CLEAN_UNTRACKED=1
 if [ "${GIT_MIRROR_CLEAN:-1}" = "0" ]; then
     CLEAN_UNTRACKED=0
 fi
 
-# ---- 默认 SSH 私钥：取 SSH 目录下第一个私钥 ----
+# ---- Default SSH private key: the first key under the SSH directory ----
 SSH_HOME="${MIRROR_SSH_HOME:-/root/.ssh}"
 DEFAULT_KEY="$(conf_get "$MIRROR_SETTINGS" default_ssh_key 2>/dev/null || true)"
 if [ -z "$DEFAULT_KEY" ] && [ -d "$SSH_HOME" ]; then
@@ -51,14 +52,14 @@ if [ -z "$DEFAULT_KEY" ] && [ -d "$SSH_HOME" ]; then
         ! -name 'authorized_keys' 2>/dev/null | sort | head -n1)"
 fi
 
-# ---- 邮件通知（可选，未配置则静默跳过） ----
+# ---- Email notification (optional; skipped silently when not configured) ----
 notify_mail() {
     local subject="$1" content="$2"
     [ -x "${SELF_DIR}/git-autosync-mail" ] || return 0
     "${SELF_DIR}/git-autosync-mail" -s "$subject" -b "$content" >/dev/null 2>&1 || true
 }
 
-# ---- 更新单个镜像 ----
+# ---- Update a single mirror ----
 update_mirror() {
     local dir="$1" url="$2" branch="$3" key="${4:-}"
     local out
@@ -72,27 +73,27 @@ update_mirror() {
         mkdir -p "$(dirname "$dir")" 2>/dev/null
         if out="$(git clone "$url" "$dir" 2>&1)"; then
             git -C "$dir" checkout "$branch" >/dev/null 2>&1
-            log "已克隆 ${dir}"
-            notify_mail "拉取成功: ${dir}" "目标: ${dir}
-分支: ${branch}
-时间: $(date '+%Y-%m-%d %H:%M:%S')
-结果: 已克隆成功"
+            log "Cloned ${dir}"
+            notify_mail "Pull OK: ${dir}" "Target: ${dir}
+Branch: ${branch}
+Time: $(date '+%Y-%m-%d %H:%M:%S')
+Result: cloned successfully"
         else
-            log "克隆失败 ${dir}: ${out}"
-            notify_mail "拉取失败: ${dir}" "目标: ${dir}
-时间: $(date '+%Y-%m-%d %H:%M:%S')
-结果: 克隆失败
-错误: ${out}"
+            log "Clone failed ${dir}: ${out}"
+            notify_mail "Pull FAILED: ${dir}" "Target: ${dir}
+Time: $(date '+%Y-%m-%d %H:%M:%S')
+Result: clone failed
+Error: ${out}"
         fi
         return
     fi
 
     if ! out="$(git -C "$dir" fetch origin "$branch" 2>&1)"; then
-        log "fetch 失败 ${dir}: ${out}"
-        notify_mail "拉取失败: ${dir}" "目标: ${dir}
-时间: $(date '+%Y-%m-%d %H:%M:%S')
-结果: fetch 失败
-错误: ${out}"
+        log "fetch failed ${dir}: ${out}"
+        notify_mail "Pull FAILED: ${dir}" "Target: ${dir}
+Time: $(date '+%Y-%m-%d %H:%M:%S')
+Result: fetch failed
+Error: ${out}"
         return
     fi
 
@@ -100,28 +101,28 @@ update_mirror() {
     if [ "$CLEAN_UNTRACKED" -eq 1 ]; then
         git -C "$dir" clean -fd >/dev/null 2>&1
     fi
-    log "已更新 ${dir} -> origin/${branch}"
-    notify_mail "拉取成功: ${dir}" "目标: ${dir}
-分支: origin/${branch}
-时间: $(date '+%Y-%m-%d %H:%M:%S')
-结果: 已更新成功"
+    log "Updated ${dir} -> origin/${branch}"
+    notify_mail "Pull OK: ${dir}" "Target: ${dir}
+Branch: origin/${branch}
+Time: $(date '+%Y-%m-%d %H:%M:%S')
+Result: updated successfully"
 }
 
-# ---- 执行一轮 ----
+# ---- Run one round ----
 run_once() {
     local count=0 dir url branch key line
 
     if [ ! -f "$MIRROR_CONF" ]; then
-        log "找不到登记表：$MIRROR_CONF（可先用 git-autosync 的『新建云端镜像拉取』登记）"
+        log "Registry not found: $MIRROR_CONF (register one first via git-autosync -> New cloud mirror pull)"
         return 0
     fi
     if [ -z "$DEFAULT_KEY" ] && ! grep -qE '^[^#]*\|[^|]*\|[^|]*\|[^|]+' "$MIRROR_CONF"; then
-        log "未找到 SSH 私钥，且登记表未逐条指定密钥"
+        log "No SSH private key found, and the registry does not specify a key per entry"
         return 1
     fi
 
     while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%%#*}"                       # 去掉行内注释
+        line="${line%%#*}"                       # strip inline comments
         line="$(printf '%s' "$line" | tr -d '\r')"
         [ -n "$(printf '%s' "$line" | tr -d '[:space:]')" ] || continue
 
@@ -140,21 +141,21 @@ EOF
         count=$((count + 1))
     done < "$MIRROR_CONF"
 
-    log "本轮完成，共处理 ${count} 个镜像"
+    log "Round finished, processed ${count} mirror(s)"
 }
 
-# ---- 入口 ----
-if ! need_cmd git; then err "未找到 git 命令"; exit 1; fi
+# ---- Entry point ----
+if ! need_cmd git; then err "git command not found"; exit 1; fi
 
 case "${1:-}" in
     --daemon)
         log "============================================"
-        log "change fetcher 启动（常驻模式）间隔: ${INTERVAL} 分钟"
-        log "登记表: ${MIRROR_CONF}  清理未跟踪文件: ${CLEAN_UNTRACKED}"
+        log "change fetcher started (resident mode), interval: ${INTERVAL} minutes"
+        log "Registry: ${MIRROR_CONF}  clean untracked files: ${CLEAN_UNTRACKED}"
         run_once
         while true; do
             sleep $((INTERVAL * 60))
-            log "----- 新一轮检测 -----"
+            log "----- new detection round -----"
             run_once
         done
         ;;

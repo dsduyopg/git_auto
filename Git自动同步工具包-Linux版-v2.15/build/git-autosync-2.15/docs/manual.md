@@ -453,7 +453,7 @@ sudo bash /opt/git-autosync/uninstall.sh  # tar.gz 安装
 │   └── git-autosync-env          环境自检
 ├── lib/common.sh                 公共函数库
 ├── systemd/                      systemd 单元模板
-├── docs/                         使用手册、0基础入门
+├── docs/                         manual.md, getting-started.md
 ├── install.sh / uninstall.sh
 └── README.md / VERSION.txt / LICENSE
 ```

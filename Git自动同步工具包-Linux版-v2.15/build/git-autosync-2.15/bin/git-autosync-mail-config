@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # ============================================================
-# Git 自动同步工具包 (Linux 版) - 邮件通知配置向导
-# 移植自 Windows 版 05-邮件通知/配置SMTP.bat + manage_recipients.ps1
-#                    + set_notify_interval.ps1 + enable_mail_on_service.ps1
+# Git AutoSync Toolkit (Linux) - email notification setup wizard
+# Ported from the Windows version: configure-SMTP.bat + manage_recipients.ps1
+#                                + set_notify_interval.ps1
+#                                + enable_mail_on_service.ps1
 #
-# 配置存放: /etc/git-autosync/mail_config.txt
-#   （放 /etc 是为了让以 root 运行的 systemd 服务也能读到）
+# Config: /etc/git-autosync/mail_config.txt
+#   (stored under /etc so the systemd service running as root can read it)
 #
-# 用法: git-autosync mail
+# Usage: git-autosync mail
 # ============================================================
 
 set -uo pipefail
@@ -18,13 +19,13 @@ SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd)"
 . "${SELF_DIR}/../lib/common.sh"
 
 if [ "$(id -u)" -ne 0 ]; then
-    err "该操作需要 root 权限（需写入 ${MAIL_CONF}），请用 sudo 运行"
+    err "This operation requires root privileges (it writes to ${MAIL_CONF}). Run with sudo"
     exit 1
 fi
 
 mkdir -p "$(dirname "$MAIL_CONF")"
 touch "$MAIL_CONF"
-chmod 0600 "$MAIL_CONF" 2>/dev/null   # 含 SMTP 授权码，收紧权限
+chmod 0600 "$MAIL_CONF" 2>/dev/null   # contains the SMTP auth code; tighten permissions
 
 declare -A PRESET_SERVER PRESET_PORT PRESET_SSL
 PRESET_SERVER=([QQ]="smtp.qq.com"    [163]="smtp.163.com"  [Gmail]="smtp.gmail.com")
@@ -35,53 +36,53 @@ cur_enabled="$(conf_get "$MAIL_CONF" enabled || echo 0)"
 
 status_line() {
     if [ "$cur_enabled" = "1" ]; then
-        ok "邮件通知：已开启（发件 $(conf_get "$MAIL_CONF" from || echo '?') → $(conf_get "$MAIL_CONF" to || echo '?')）"
+        ok "Email notification: enabled (from $(conf_get "$MAIL_CONF" from || echo '?') -> $(conf_get "$MAIL_CONF" to || echo '?'))"
     else
-        warn "邮件通知：已关闭（不配置则一封都不发，行为与 v2.14 一致）"
+        warn "Email notification: disabled (no mail is sent until configured; same as v2.14 behavior)"
     fi
 }
 
-# ---------- 开启并绑定 SMTP ----------
+# ---------- Enable and bind SMTP ----------
 do_enable() {
-    title "开启邮件通知并绑定 SMTP"
+    title "Enable email notification and bind SMTP"
     hr
-    echo "选择邮箱类型："
-    echo "  1) QQ 邮箱      2) 163 邮箱      3) Gmail      4) 自定义"
+    echo "Select mailbox type:"
+    echo "  1) QQ Mail     2) 163 Mail     3) Gmail     4) Custom"
     local t server port ssl
-    read -r -p "选择 [1-4]（默认 1）: " t
+    read -r -p "Choose [1-4] (default 1): " t
     case "$t" in
         2) server="${PRESET_SERVER[163]}"; port="${PRESET_PORT[163]}"; ssl="${PRESET_SSL[163]}";;
         3) server="${PRESET_SERVER[Gmail]}"; port="${PRESET_PORT[Gmail]}"; ssl="${PRESET_SSL[Gmail]}";;
-        4) server="$(ask "  SMTP 服务器地址")"; port="$(ask "  端口" "465")"; ssl="$(ask "  使用 SSL？1=是 0=否（587 端口通常选 0）" "0")";;
+        4) server="$(ask "  SMTP server address")"; port="$(ask "  Port" "465")"; ssl="$(ask "  Use SSL? 1=yes 0=no (port 587 usually 0)" "0")";;
         *) server="${PRESET_SERVER[QQ]}"; port="${PRESET_PORT[QQ]}"; ssl="${PRESET_SSL[QQ]}";;
     esac
 
     local from pass pass2 to
-    from="$(ask "发件邮箱地址")"
+    from="$(ask "Sender email address")"
     echo
-    warn "下面要填的是【SMTP 授权码】，不是邮箱登录密码！"
-    info "  QQ 邮箱 : 设置 -> 账户 -> POP3/SMTP服务 -> 生成授权码"
-    info "  163 邮箱: 设置 -> POP3/SMTP/IMAP -> 开启 -> 生成授权码"
+    warn "You must enter the SMTP authorization code, NOT your mailbox login password!"
+    info "  QQ Mail : Settings -> Account -> POP3/SMTP service -> generate authorization code"
+    info "  163 Mail: Settings -> POP3/SMTP/IMAP -> enable -> generate authorization code"
     echo
-    info "注意：输入时屏幕不会显示任何字符（防偷窥，和输入 sudo 密码一样），"
-    info "      直接输入后按回车即可。需要连输两遍，两遍一致才会保存。"
+    info "Note: nothing is echoed while you type (like a sudo password)."
+    info "      Press Enter when done. You need to type it twice, and they must match."
     echo
     while true; do
-        read -r -s -p "SMTP 授权码: " pass; echo
+        read -r -s -p "SMTP authorization code: " pass; echo
         if [ -z "$pass" ]; then
-            err "授权码不能为空，请重新输入"
+            err "The authorization code cannot be empty, please try again"
             continue
         fi
-        read -r -s -p "再确认一次: " pass2; echo
+        read -r -s -p "Confirm it once more: " pass2; echo
         if [ "$pass" = "$pass2" ]; then
-            ok "两次输入一致，已确认"
+            ok "The two entries match, confirmed"
             break
         fi
-        err "两次输入不一致，请重新输入"
+        err "The two entries do not match, please try again"
     done
-    to="$(ask "收件人邮箱（多个用逗号分隔）" "$from")"
+    to="$(ask "Recipient email(s), comma separated" "$from")"
 
-    [ -n "$server" ] && [ -n "$from" ] && [ -n "$pass" ] && [ -n "$to" ] || { err "信息不完整，已取消"; return 1; }
+    [ -n "$server" ] && [ -n "$from" ] && [ -n "$pass" ] && [ -n "$to" ] || { err "Incomplete information, cancelled"; return 1; }
 
     conf_set "$MAIL_CONF" enabled      1
     conf_set "$MAIL_CONF" smtp_server  "$server"
@@ -93,121 +94,121 @@ do_enable() {
     conf_set "$MAIL_CONF" notify_interval "$(conf_get "$MAIL_CONF" notify_interval || echo 0)"
 
     chmod 0600 "$MAIL_CONF" 2>/dev/null
-    ok "SMTP 已保存：$from -> $to（$server:$port）"
+    ok "SMTP settings saved: $from -> $to ($server:$port)"
     cur_enabled=1
 }
 
-# ---------- 关闭 ----------
+# ---------- Disable ----------
 do_disable() {
     conf_set "$MAIL_CONF" enabled 0
-    ok "邮件通知已关闭（同步功能不受影响）"
+    ok "Email notification disabled (syncing is unaffected)"
     cur_enabled=0
 }
 
-# ---------- 发送测试邮件 ----------
+# ---------- Send a test mail ----------
 do_test() {
     if [ "$cur_enabled" != "1" ]; then
-        err "邮件通知未开启，请先选 [1]"
+        err "Email notification is not enabled yet, please choose [1] first"
         return 1
     fi
-    info "正在发送测试邮件（跳过节流）..."
+    info "Sending a test mail (throttling skipped)..."
     "${SELF_DIR}/git-autosync-mail" -f \
-        -s "[Git自动同步] 测试邮件" \
-        -b "这是一封来自 Git 自动同步工具包 (Linux 版) 的测试邮件。
-时间: $(date '+%Y-%m-%d %H:%M:%S')
-主机: $(hostname)
+        -s "[GitAutoSync] Test mail" \
+        -b "This is a test mail from the Git AutoSync Toolkit (Linux).
+Time: $(date '+%Y-%m-%d %H:%M:%S')
+Host: $(hostname)
 
-收到这封邮件说明 SMTP 配置正确。"
+Receiving this mail means your SMTP settings are correct."
     echo
     tail -n 5 "$MAIL_LOG" 2>/dev/null || true
     echo
-    confirm "是否收到测试邮件？" && ok "配置完成！" || warn "未收到请检查：邮箱地址、授权码、SMTP 端口（见上方日志）"
+    confirm "Did you receive the test mail?" && ok "Setup complete!" || warn "If not, check: email address, authorization code, SMTP port (see the log above)"
 }
 
-# ---------- 管理收件人 ----------
+# ---------- Manage recipients ----------
 do_recipients() {
-    title "管理收件人"
-    echo "  1) 查看当前收件人"
-    echo "  2) 修改收件人（多个用逗号分隔）"
+    title "Manage recipients"
+    echo "  1) Show current recipients"
+    echo "  2) Change recipients (comma separated)"
     local c
-    read -r -p "选择: " c
+    read -r -p "Choose: " c
     case "$c" in
-        1) echo "当前收件人：$(conf_get "$MAIL_CONF" to || echo '未设置')";;
+        1) echo "Current recipients: $(conf_get "$MAIL_CONF" to || echo 'not set')";;
         2)
             local to
-            to="$(ask "新的收件人（多个用逗号分隔）" "$(conf_get "$MAIL_CONF" to || echo '')")"
+            to="$(ask "New recipients, comma separated" "$(conf_get "$MAIL_CONF" to || echo '')")"
             conf_set "$MAIL_CONF" to "$to"
-            ok "已更新收件人：$to"
+            ok "Recipients updated: $to"
             ;;
     esac
 }
 
-# ---------- 通知间隔（聚合窗口） ----------
+# ---------- Notification interval (aggregation window) ----------
 do_interval() {
-    title "设置通知间隔（聚合窗口）"
-    info "0 = 即时发送（每次同步都发）"
-    info ">0 = 该分钟数内最多发一封，避免频繁改动时刷屏"
+    title "Set notification interval (aggregation window)"
+    info "0  = send instantly (one mail per sync)"
+    info ">0 = at most one mail within that many minutes, avoids flooding on frequent changes"
     local v
-    v="$(ask "间隔分钟数（0-1440）" "$(conf_get "$MAIL_CONF" notify_interval || echo 0)")"
+    v="$(ask "Interval in minutes (0-1440)" "$(conf_get "$MAIL_CONF" notify_interval || echo 0)")"
     if [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 0 ] && [ "$v" -le 1440 ]; then
         conf_set "$MAIL_CONF" notify_interval "$v"
-        ok "已设为 ${v} 分钟"
+        ok "Set to ${v} minutes"
     else
-        err "输入无效"
+        err "Invalid input"
     fi
 }
 
-# ---------- 给仓库开启/关闭邮件通知 ----------
+# ---------- Enable/disable mail notification per repository ----------
 do_repo_toggle() {
-    title "为指定仓库开关邮件通知"
+    title "Toggle email notification for a repository"
     local repos r i=1 sel name
     repos="$(list_repos)"
     if [ -z "$repos" ]; then
-        warn "尚未登记任何仓库"
+        warn "No repositories registered yet"
         return 0
     fi
     while IFS= read -r r; do
         local st
         st="$(conf_get "${REPO_CONF_DIR}/${r}.conf" mail_notify || echo 0)"
-        printf '  %d) %-24s 邮件通知: %s\n' "$i" "$r" "$([ "$st" = "1" ] && echo 开启 || echo 关闭)"
+        printf '  %d) %-24s mail notification: %s\n' "$i" "$r" "$([ "$st" = "1" ] && echo on || echo off)"
         i=$((i + 1))
     done <<EOF
 $repos
 EOF
-    read -r -p "选择编号: " sel
+    read -r -p "Select number: " sel
     name="$(printf '%s\n' "$repos" | sed -n "${sel}p")"
-    [ -n "$name" ] || { err "选择无效"; return 1; }
+    [ -n "$name" ] || { err "Invalid selection"; return 1; }
 
     local cur
     cur="$(conf_get "${REPO_CONF_DIR}/${name}.conf" mail_notify || echo 0)"
     if [ "$cur" = "1" ]; then
         conf_set "${REPO_CONF_DIR}/${name}.conf" mail_notify 0
-        ok "已关闭 ${name} 的邮件通知"
+        ok "Email notification disabled for ${name}"
     else
         conf_set "${REPO_CONF_DIR}/${name}.conf" mail_notify 1
-        ok "已开启 ${name} 的邮件通知"
+        ok "Email notification enabled for ${name}"
     fi
     if has_systemd; then
-        confirm "是否重启该服务使配置生效？" && systemctl restart "git-autosync@${name}.service" && ok "已重启"
+        confirm "Restart the service to apply the change?" && systemctl restart "git-autosync@${name}.service" && ok "Restarted"
     fi
 }
 
-# ---------- 主菜单 ----------
+# ---------- Main menu ----------
 while true; do
-    title "邮件通知配置（可选功能，默认关闭）"
+    title "Email notification setup (optional feature, off by default)"
     status_line
     hr
-    echo "  1) 开启并绑定 SMTP"
-    echo "  2) 关闭邮件通知"
-    echo "  3) 发送测试邮件"
-    echo "  4) 管理收件人"
-    echo "  5) 设置通知间隔（防刷屏）"
-    echo "  6) 为指定仓库开关邮件通知"
-    echo "  7) 查看邮件日志"
-    echo "  0) 返回"
+    echo "  1) Enable and bind SMTP"
+    echo "  2) Disable email notification"
+    echo "  3) Send a test mail"
+    echo "  4) Manage recipients"
+    echo "  5) Set notification interval (anti-flood)"
+    echo "  6) Toggle email notification per repository"
+    echo "  7) View mail log"
+    echo "  0) Back"
     echo
     local_c=""
-    read -r -p "选择 [0-7]: " local_c
+    read -r -p "Choose [0-7]: " local_c
     case "$local_c" in
         1) do_enable;;
         2) do_disable;;
@@ -215,10 +216,10 @@ while true; do
         4) do_recipients;;
         5) do_interval;;
         6) do_repo_toggle;;
-        7) tail -n 20 "$MAIL_LOG" 2>/dev/null || warn "暂无邮件日志";;
+        7) tail -n 20 "$MAIL_LOG" 2>/dev/null || warn "No mail log yet";;
         0) exit 0;;
-        *) warn "无效选择";;
+        *) warn "Invalid choice";;
     esac
     echo
-    read -r -p "按回车继续..." || true
+    read -r -p "Press Enter to continue..." || true
 done

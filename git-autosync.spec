@@ -13,15 +13,14 @@
 
 Name:           git-autosync
 Version:        2.15
-Release:        7%{?dist}
+Release:        10%{?dist}
 Summary:        Git automatic synchronization toolkit for local folders
 
 License:        MIT
 URL:            https://github.com/dsduyopg/git_auto
-Source0:        https://github.com/dsduyopg/git_auto/releases/download/v%{version}/%{name}-%{version}.tar.gz
+Source0:        %{name}-%{version}.tar.gz
 Source1:        git-autosync.rpmlintrc
-# SHA-256 of the upstream source tarball (verify before building):
-# c4514784b015e49eb4369690213e86ce93e814ed7980717112a8ba1ea55f4af0
+# The source tarball checksum is published with each release; verify before building.
 
 BuildArch:      noarch
 
@@ -31,6 +30,8 @@ Requires:       inotify-tools
 Requires:       systemd
 Requires:       python3
 Requires:       logrotate
+# ssh-keygen is used by "git-autosync ssh-key" (menu item 2)
+Requires:       openssh-clients
 BuildRequires:  systemd-rpm-macros
 %{?systemd_requires}
 
@@ -68,6 +69,9 @@ done
 rm -rf %{buildroot}
 
 # 程序主体（LICENSE 由 license 宏单独安装，此处不复制以免文件重复）
+# 源码来自 Windows 文件系统时 LICENSE 会带可执行位，若不去掉，rpmlint 会报
+# script-without-shebang；这里统一收紧为 0644
+chmod 0644 LICENSE
 mkdir -p %{buildroot}%{install_dir}
 cp -r bin lib systemd %{buildroot}%{install_dir}/
 cp README.md VERSION.txt %{buildroot}%{install_dir}/
@@ -115,6 +119,22 @@ chmod 0644 %{buildroot}%{_mandir}/man1/git-autosync.1.gz
 
 %post
 %systemd_post git-autosync-fetch.service git-autosync-fetch.timer
+# Refresh runtime unit copies created by the toolkit so an upgrade does
+# not leave stale unit files under /etc/systemd/system.
+if [ -d %{_sysconfdir}/systemd/system ]; then
+    install -m 0644 %{install_dir}/systemd/git-autosync@.service \
+        %{_sysconfdir}/systemd/system/ 2>/dev/null || :
+    install -m 0644 %{install_dir}/systemd/git-autosync-fetch.service \
+        %{_sysconfdir}/systemd/system/ 2>/dev/null || :
+    if [ -f %{_sysconfdir}/systemd/system/git-autosync-fetch.timer ]; then
+        sed -i 's|^Description=.*|Description=Git AutoSync scheduled mirror pull|' \
+            %{_sysconfdir}/systemd/system/git-autosync-fetch.timer
+    else
+        install -m 0644 %{install_dir}/systemd/git-autosync-fetch.timer \
+            %{_sysconfdir}/systemd/system/ 2>/dev/null || :
+    fi
+    systemctl daemon-reload 2>/dev/null || :
+fi
 echo "git-autosync has been installed."
 echo "  Run: sudo git-autosync          # interactive main menu"
 echo "       sudo git-autosync env      # environment check"
@@ -135,6 +155,21 @@ fi
 %systemd_postun_with_restart git-autosync-fetch.service git-autosync-fetch.timer
 
 %changelog
+* Wed Sep 02 2026 wowsony <dsduyopg@github.com> - 2.15-10
+- Add missing runtime dependency: openssh-clients (ssh-keygen is
+  required by "git-autosync ssh-key")
+- Rename bundled docs to ASCII filenames (manual.md, getting-started.md)
+  and update the man page reference accordingly
+- Fix rpmlint: drop the shebang from the sourced libraries
+  (lib/common.sh, lib/i18n.sh) and set LICENSE to 0644
+* Wed Sep 02 2026 wowsony <dsduyopg@github.com> - 2.15-9
+- i18n: env / sync / fetch / mail sub-commands now output English;
+  the main menu keeps its bilingual mode (English default, Chinese optional)
+- i18n: added the missing translation entries for sub-command titles
+  and the language menu
+* Wed Sep 02 2026 wowsony <dsduyopg@github.com> - 2.15-8
+- Fix: menu item "Email notification" failed with "No such file or
+  directory"; cmd_mail() now invokes git-autosync-mail-config
 * Tue Sep 01 2026 wowsony <dsduyopg@github.com> - 2.15-7
 - i18n: default English UI with optional Chinese mode
 - man page translated to English, install paths updated

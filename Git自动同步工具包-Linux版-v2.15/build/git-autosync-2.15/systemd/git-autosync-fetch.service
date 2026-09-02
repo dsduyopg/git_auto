@@ -1,6 +1,6 @@
 [Unit]
-Description=Git 云端镜像拉取（单次执行）
-Documentation=file:/opt/git-autosync/README.md
+Description=Git AutoSync scheduled mirror fetch (one-shot)
+Documentation=file:/usr/share/git-autosync/README.md
 After=network-online.target
 Wants=network-online.target
 

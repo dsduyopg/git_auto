@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # ============================================================
 # Git 自动同步工具包 (Linux 版) - 公共函数库
 # 由 Windows v2.15 (PowerShell/NSSM) 移植
@@ -122,7 +121,7 @@ clear_index_lock() {
         # 仅清理超过 60 秒未被修改的僵尸锁，避免误删正在进行的 git 操作
         local age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
         if [ "$age" -gt 60 ]; then
-            rm -f "$lock" && warn "已清理残留锁：${lock}（${age} 秒未变动）"
+            rm -f "$lock" && warn "已清理残留锁：${lock} (${age} 秒未变动)"
             return 0
         fi
     fi

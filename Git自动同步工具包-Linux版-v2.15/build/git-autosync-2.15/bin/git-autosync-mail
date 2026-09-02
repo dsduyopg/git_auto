@@ -1,27 +1,28 @@
 #!/usr/bin/env bash
 # ============================================================
-# Git 自动同步工具包 (Linux 版) - 邮件通知模块
-# 移植自 Windows 版 05-邮件通知/send_mail.ps1（.NET SmtpClient -> python3 smtplib）
+# Git AutoSync Toolkit (Linux) - email notification module
+# Ported from the Windows version: 05-mail-notification/send_mail.ps1
+#   (.NET SmtpClient -> python3 smtplib)
 #
-# 用法:
-#   git-autosync-mail -s "主题" -b "正文" [-t 收件人] [-f]
-#     -t  覆盖收件人（多个用逗号分隔）
-#     -f  强制发送，跳过节流（测试邮件用）
+# Usage:
+#   git-autosync-mail -s "subject" -b "body" [-t recipient] [-f]
+#     -t  override recipients (comma separated)
+#     -f  force send, skip throttling (for test mail)
 #
-# 配置: /etc/git-autosync/mail_config.txt (key=value)
-#     enabled=1|0             总开关，默认关闭
+# Config: /etc/git-autosync/mail_config.txt (key=value)
+#     enabled=1|0             master switch, off by default
 #     smtp_server=smtp.qq.com
-#     smtp_port=465           默认 465
-#     use_ssl=1|0             默认 1
+#     smtp_port=465           default 465
+#     use_ssl=1|0             default 1
 #     from=you@qq.com
-#     password=SMTP授权码      （不是邮箱登录密码）
+#     password=SMTP auth code (not the mailbox login password)
 #     to=a@b.com,c@d.com
-#     notify_interval=0       聚合窗口（分钟），0=即时发送
+#     notify_interval=0       aggregation window (minutes), 0 = send instantly
 #
-# 设计原则（与 Windows 版一致）：
-#   1. 未配置 或 enabled=0 -> 静默退出(exit 0)，绝不影响同步主流程
-#   2. 发送失败             -> 仅记录日志，exit 0，不中断同步
-#   3. 配置放 /etc 下，保证 systemd 服务(root)与当前用户都能读到
+# Design rules (same as the Windows version):
+#   1. Not configured or enabled=0 -> exit silently (0), never block syncing
+#   2. Send failure                 -> log only, exit 0, never interrupt sync
+#   3. Config lives under /etc so both systemd (root) and the user can read it
 # ============================================================
 
 set -uo pipefail
@@ -50,12 +51,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# 日志目录自动创建
+# Create the log directory automatically
 mkdir -p "$(dirname "$MAIL_CONF")" 2>/dev/null
 
 mail_log() { log_line "$MAIL_LOG" "$*"; }
 
-# ---- 未配置则静默跳过（不算错误） ----
+# ---- Not configured: skip silently (not an error) ----
 if [ ! -f "$MAIL_CONF" ]; then exit 0; fi
 
 enabled="$(conf_get "$MAIL_CONF" enabled || echo 0)"
@@ -72,13 +73,13 @@ interval="$(conf_get "$MAIL_CONF" notify_interval || echo 0)"
 [ -n "$TO_OVERRIDE" ] && to="$TO_OVERRIDE"
 
 if [ -z "$server" ] || [ -z "$from" ] || [ -z "$pass" ] || [ -z "$to" ]; then
-    mail_log "[跳过] 邮件配置不完整（smtp_server / from / password / to 为必填）"
+    mail_log "[skip] Email configuration incomplete (smtp_server / from / password / to are required)"
     exit 0
 fi
 
 [[ "$interval" =~ ^[0-9]+$ ]] || interval=0
 
-# ---- 发送频率节流：interval 分钟内最多一封（聚合通知，避免刷屏） ----
+# ---- Throttling: at most one mail per interval minutes (aggregate to avoid spam) ----
 if [ "$FORCE" -eq 0 ] && [ "$interval" -gt 0 ]; then
     if [ -f "$LAST_NOTIFY" ]; then
         last_t="$(stat -c %Y "$LAST_NOTIFY" 2>/dev/null || echo 0)"
@@ -90,9 +91,9 @@ if [ "$FORCE" -eq 0 ] && [ "$interval" -gt 0 ]; then
     touch "$LAST_NOTIFY" 2>/dev/null || true
 fi
 
-# ---- 用 python3 发送（UTF-8 中文主题/正文） ----
+# ---- Send via python3 (UTF-8 subject/body) ----
 if ! need_cmd python3; then
-    mail_log "[失败] 未找到 python3，无法发送邮件"
+    mail_log "[failed] python3 not found; cannot send mail"
     exit 0
 fi
 
@@ -110,7 +111,7 @@ use_ssl = os.environ.get('MAIL_SSL', '1') != '0'
 user = os.environ.get('MAIL_FROM', '')
 passwd = os.environ.get('MAIL_PASS', '')
 to_raw = os.environ.get('MAIL_TO', '')
-subject = os.environ.get('MAIL_SUBJECT', 'Git 自动同步通知')
+subject = os.environ.get('MAIL_SUBJECT', 'Git AutoSync notification')
 body = os.environ.get('MAIL_BODY', '')
 
 recipients = [a.strip() for a in to_raw.replace(';', ',').split(',') if a.strip()]
@@ -144,9 +145,9 @@ PYEOF
 
 _rc=$?
 if [ "$_rc" -eq 0 ]; then
-    mail_log "[OK] 邮件已发送 -> ${to}（主题: ${SUBJECT}）"
+    mail_log "[OK] Mail sent -> ${to} (subject: ${SUBJECT})"
 else
-    mail_log "[失败] 发送邮件出错（详见上一条 python3 输出）"
+    mail_log "[failed] Error sending mail (see the python3 output above)"
 fi
 
 exit 0
