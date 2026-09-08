@@ -1,6 +1,6 @@
 # Git 自动同步工具包（Linux 版 v2.15）使用手册
 
-> 作者：wowsony　仓库：https://github.com/dsduyopg/linux_heima
+> 作者：wowsony　仓库：https://github.com/dsduyopg/git_auto
 > 本版本由 Windows v2.15（PowerShell + NSSM）移植，功能与操作保持一致。
 
 ---

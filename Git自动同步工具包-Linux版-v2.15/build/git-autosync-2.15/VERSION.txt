@@ -1,6 +1,6 @@
 Git 自动同步工具包 v2.15 (Linux 版)
 作者: wowsony
-仓库: https://github.com/dsduyopg/linux_heima
+仓库: https://github.com/dsduyopg/git_auto
 打包日期: 2026-08-31
 兼容: RHEL / CentOS / Fedora / AlmaLinux / Rocky 等使用 systemd 的发行版
 

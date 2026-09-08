@@ -2,7 +2,7 @@
 
 让文件夹自动同步 Gitee / GitHub，或把云端仓库定时拉取到本地。0 基础可用。
 
-> 作者：wowsony · 仓库：https://github.com/dsduyopg/linux_heima
+> 作者：wowsony · 仓库：https://github.com/dsduyopg/git_auto
 > 本版本由 **Windows v2.15（PowerShell + NSSM）** 完整移植到 Linux，功能与操作保持一致。
 
 ## 和 Windows 版的对照

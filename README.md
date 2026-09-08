@@ -8,6 +8,20 @@ A Git automatic synchronization toolkit for Linux. Auto-push local folders to Gi
 
 This is the Linux port of the Windows v2.15 version (PowerShell + NSSM), using filesystem event monitoring / systemd / systemd-timer / python3.
 
+## Downloads
+
+Latest release: **[2.15-10](https://github.com/dsduyopg/git_auto/releases/tag/2.15-10)**
+
+| Asset | What it is |
+|---|---|
+| `git-autosync-2.15-10.el10.noarch.rpm` | Installable RPM (RHEL / CentOS / Fedora / AlmaLinux / Rocky / EPEL) |
+| `git-autosync-2.15-10.el10.src.rpm` | Source RPM |
+| `git-autosync-2.15.tar.gz` | No-install tarball (any distro with systemd) |
+| `Git自动同步工具包-Linux版-v2.15.zip` | 中文打包版 |
+| `win系统Git自动同步工具包-v2.16-20260831.zip` | Windows 版（PowerShell + NSSM） |
+
+> 关键词 / tags: `git` · `git-sync` · `auto-sync` · `backup` · `gitee` · `github` · `systemd` · `inotify` · `linux` · `windows` · `自动化同步` · `自动备份`
+
 ## Features
 
 - Real-time two-way sync (watch → commit → push / pull)
@@ -23,7 +37,7 @@ This is the Linux port of the Windows v2.15 version (PowerShell + NSSM), using f
 ### RPM package (recommended)
 
 ```bash
-sudo dnf install ./git-autosync-2.15-6.el10.noarch.rpm
+sudo dnf install ./git-autosync-2.15-10.el10.noarch.rpm
 # Uninstall: sudo dnf remove git-autosync
 ```
 
@@ -94,6 +108,10 @@ sudo journalctl -u git-autosync@<name> -f
 | `/etc/git-autosync/mail_config.txt` | SMTP config (mode 0600) |
 | `/var/log/git-autosync/` | Pull and mail logs |
 | `<repo>/git_sync.log` | Per-repository sync log |
+
+## Windows version
+
+Windows 版工具包也在本仓库：`win系统Git自动同步工具包-v2.16-20260831.zip`（PowerShell + NSSM，功能与 Linux 版对齐）。解压后按包内说明运行 `.bat` 即可，无需安装环境。
 
 ## License
 
