@@ -7,3 +7,7 @@
 addFilter("spelling-error .* inotify")
 addFilter("spelling-error .* systemd")
 addFilter("devel-file-in-non-devel-package")
+# %post refreshes runtime unit copies under /etc/systemd/system so an
+# upgrade does not leave stale unit files behind.
+addFilter("dangerous-command-in-%post")
+addFilter("dangerous-command-in-%preun")

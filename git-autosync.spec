@@ -18,7 +18,7 @@ Summary:        Git automatic synchronization toolkit for local folders
 
 License:        MIT
 URL:            https://github.com/dsduyopg/git_auto
-Source0:        %{name}-%{version}.tar.gz
+Source0:        https://github.com/dsduyopg/git_auto/releases/download/2.15-10/%{name}-%{version}.tar.gz
 Source1:        git-autosync.rpmlintrc
 # The source tarball checksum is published with each release; verify before building.
 
@@ -47,11 +47,6 @@ Features:
 - Email notification on success / failure (optional, off by default)
 - Auto-cleanup of stale index.lock to avoid sync stalls
 - Runs on RHEL / CentOS / Fedora / AlmaLinux / Rocky
-
----------------------------------------------------------------------------
-Git 自动同步工具包（Linux 版）：自动把本地文件夹变更同步到 Gitee / GitHub，
-或把云端仓库定时拉取到本地，0 基础可用。基于原 Windows 版（PowerShell +
-NSSM）移植到 systemd + inotify。
 
 %prep
 %setup -q
@@ -87,7 +82,7 @@ install -m 0644 logrotate/git-autosync %{buildroot}%{_sysconfdir}/logrotate.d/gi
 
 # 命令入口
 mkdir -p %{buildroot}%{_bindir}
-ln -sf %{install_dir}/bin/git-autosync %{buildroot}%{_bindir}/git-autosync
+ln -sf ../share/git-autosync/bin/git-autosync %{buildroot}%{_bindir}/git-autosync
 
 # systemd 单元
 mkdir -p %{buildroot}%{_unitdir}
@@ -112,7 +107,7 @@ chmod 0644 %{buildroot}%{_mandir}/man1/git-autosync.1.gz
 %{_unitdir}/git-autosync-fetch.service
 %{_unitdir}/git-autosync-fetch.timer
 %dir %{_sysconfdir}/git-autosync
-%dir %{_sysconfdir}/git-autosync/repos
+%attr(0700, root, root) %dir %{_sysconfdir}/git-autosync/repos
 %dir %{_localstatedir}/log/git-autosync
 %{_mandir}/man1/git-autosync.1.gz
 %config(noreplace) %{_sysconfdir}/logrotate.d/git-autosync
@@ -148,6 +143,12 @@ if [ "$1" -eq 0 ]; then
         systemctl stop "git-autosync@${n}.service" >/dev/null 2>&1 || :
         systemctl disable "git-autosync@${n}.service" >/dev/null 2>&1 || :
     done
+    # Remove runtime unit copies created by the toolkit so dnf remove
+    # does not leave stale units behind.
+    rm -f %{_sysconfdir}/systemd/system/git-autosync@.service \
+          %{_sysconfdir}/systemd/system/git-autosync-fetch.service \
+          %{_sysconfdir}/systemd/system/git-autosync-fetch.timer
+    systemctl daemon-reload >/dev/null 2>&1 || :
 fi
 %systemd_preun git-autosync-fetch.service git-autosync-fetch.timer
 
@@ -176,8 +177,8 @@ fi
 - English Summary
 - rpmlint: suppress false spelling-error warnings
 * Tue Sep 01 2026 wowsony <dsduyopg@github.com> - 2.15-1
-- Linux 版首发，移植自 Windows v2.15
-- 遵循 Fedora Packaging Guidelines：改用 /usr/share 标准路径，补充 logrotate 配置
-- systemd 服务替代 NSSM，inotifywait 替代 FileSystemWatcher
-- 含完整中文使用手册与 man 手册页
-- 提供中英双语 %%description，便利国际化评审
+- Initial Linux release, ported from Windows v2.15
+- Follow Fedora Packaging Guidelines: use /usr/share standard paths, add logrotate
+- Replace NSSM with systemd and FileSystemWatcher with inotifywait
+- Include Chinese user manual and man page
+- Provide bilingual %%description for i18n review
