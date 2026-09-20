@@ -108,20 +108,28 @@ function Install-MailService {
     $svc = Get-Service -Name 'GitAutoSyncMail' -ErrorAction SilentlyContinue
     if (-not $svc) {
         $pwsh = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
-        & $nssm install GitAutoSyncMail | Out-Null
+        & $nssm install GitAutoSyncMail $pwsh "-NoProfile -ExecutionPolicy Bypass -File `"$MonitorScript`"" | Out-Null
         & $nssm set GitAutoSyncMail Application $pwsh | Out-Null
         & $nssm set GitAutoSyncMail AppParameters "-NoProfile -ExecutionPolicy Bypass -File `"$MonitorScript`"" | Out-Null
         & $nssm set GitAutoSyncMail AppDirectory $GA | Out-Null
         & $nssm set GitAutoSyncMail DisplayName "GitAutoSync 邮件通知监控" | Out-Null
         & $nssm set GitAutoSyncMail Description "监控启用邮件的仓库, 有新推送时发送通知" | Out-Null
         & $nssm set GitAutoSyncMail Start SERVICE_AUTO_START | Out-Null
+        if (-not (Get-Service -Name 'GitAutoSyncMail' -ErrorAction SilentlyContinue)) {
+            Write-Host "安装 GitAutoSyncMail 失败：nssm 没有创建服务（检查 $nssm 是否存在、是否以管理员运行）" -ForegroundColor Red
+            return
+        }
         Write-Host '已安装 GitAutoSyncMail 服务' -ForegroundColor Green
     }
 
     Stop-Service GitAutoSyncMail -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 800
     Start-Service GitAutoSyncMail -ErrorAction SilentlyContinue
-    Write-Host '已启动 GitAutoSyncMail 服务' -ForegroundColor Green
+    if ((Get-Service -Name 'GitAutoSyncMail' -ErrorAction SilentlyContinue).Status -eq 'Running') {
+        Write-Host '已启动 GitAutoSyncMail 服务' -ForegroundColor Green
+    } else {
+        Write-Host '启动 GitAutoSyncMail 服务失败（请确认以管理员身份运行）' -ForegroundColor Red
+    }
 
     # 发一封测试邮件确认配置可用
     if (Test-Path -LiteralPath $SendMail) {
