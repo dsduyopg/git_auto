@@ -50,8 +50,8 @@ goto END
 :SETUP
 echo.
 echo --- 选择邮箱类型 (自动填写服务器和端口) ---
-echo   [1] QQ邮箱       smtp.qq.com     465  SSL
-echo   [2] 163邮箱      smtp.163.com    465  SSL
+echo   [1] QQ邮箱       smtp.qq.com     587  STARTTLS
+echo   [2] 163邮箱      smtp.163.com    587  STARTTLS
 echo   [3] Gmail        smtp.gmail.com  587  STARTTLS
 echo   [4] 企业邮箱 / 自定义 (手动填写)
 echo.
@@ -59,13 +59,13 @@ set /p MTYPE=   请输入 1-4:
 
 if "%MTYPE%"=="1" (
   set "SMTP_SERVER=smtp.qq.com"
-  set "SMTP_PORT=465"
+  set "SMTP_PORT=587"
   set "USE_SSL=1"
   goto ASKMAIL
 )
 if "%MTYPE%"=="2" (
   set "SMTP_SERVER=smtp.163.com"
-  set "SMTP_PORT=465"
+  set "SMTP_PORT=587"
   set "USE_SSL=1"
   goto ASKMAIL
 )
@@ -77,9 +77,9 @@ if "%MTYPE%"=="3" (
 )
 if "%MTYPE%"=="4" (
   set /p SMTP_SERVER=   SMTP 服务器 (如 smtp.exmail.qq.com): 
-  set /p SMTP_PORT=    端口 (回车默认 465): 
+  set /p SMTP_PORT=    端口 (回车默认 587; 465 隐式SSL 本工具不支持): 
   set /p USE_SSL=      是否 SSL (1=是 0=否, 回车默认 1): 
-  if not defined SMTP_PORT set "SMTP_PORT=465"
+  if not defined SMTP_PORT set "SMTP_PORT=587"
   if not defined USE_SSL set "USE_SSL=1"
   goto ASKMAIL
 )
@@ -141,9 +141,12 @@ if not exist "%CONF%" (
   goto TOP
 )
 if not exist "%CONFDIR%" mkdir "%CONFDIR%" 2>nul
-> "%CONF%" echo # Git 自动同步工具包 - 邮件通知配置
->> "%CONF%" echo enabled=0
-echo   [OK] 邮件通知已关闭 (配置保留, 可随时重新开启)
+set "TMPCONF=%CONF%.tmp"
+> "%TMPCONF%" echo # Git 自动同步工具包 - 邮件通知配置
+>> "%TMPCONF%" echo enabled=0
+>> "%TMPCONF%" findstr /b /v /c:"#" /c:"enabled=" "%CONF%"
+move /y "%TMPCONF%" "%CONF%" >nul
+echo   [OK] 邮件通知已关闭 (SMTP 账号等配置已保留, 可随时重新开启)
 echo.
 pause
 goto TOP
